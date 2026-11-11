@@ -907,19 +907,42 @@ func TestCtrlCDuringAScheduleChangeQuitsAfterAFailureToo(t *testing.T) {
 	}
 }
 
-// A change that succeeded, or that only asked for a confirmation, leaves nothing to report.
+// A change that succeeded leaves nothing to report.
 func TestQuitAfterAScheduleChangeThatSucceededExitsClean(t *testing.T) {
-	for name, msg := range map[string]schedDoneMsg{
-		"success":      {p: pending{kind: "sched"}, res: routine.SchedResult{Before: "a", After: "b"}},
-		"confirmation": {p: pending{kind: "sched"}, err: &routine.ConfirmError{Need: routine.NeedReloadRunning}},
-	} {
-		m := newModel(sample())
-		m.work = &working{kind: "sched", label: "alpha.ai", cancel: func() {}}
-		m.Update(key("ctrl+c"))
-		_, cmd := m.Update(msg)
-		if _, ok := cmd().(tea.QuitMsg); !ok || result(m, nil) != nil {
-			t.Errorf("%s: quit=%v err=%v", name, cmd != nil, result(m, nil))
-		}
+	m := newModel(sample())
+	m.work = &working{kind: "sched", label: "alpha.ai", cancel: func() {}}
+	m.Update(key("ctrl+c"))
+	_, cmd := m.Update(schedDoneMsg{p: pending{kind: "sched"}, res: routine.SchedResult{Before: "a", After: "b"}})
+	if _, ok := cmd().(tea.QuitMsg); !ok || result(m, nil) != nil {
+		t.Errorf("err=%v", result(m, nil))
+	}
+}
+
+// A bare confirmation: nothing was changed, and the user is told so (exit 1).
+func TestQuitAfterAConfirmationIsReported(t *testing.T) {
+	m := newModel(sample())
+	m.work = &working{kind: "sched", label: "alpha.ai", cancel: func() {}}
+	m.Update(key("ctrl+c"))
+	ce := &routine.ConfirmError{Need: routine.NeedReloadRunning, Msg: "alpha.ai is running"}
+	m.Update(schedDoneMsg{p: pending{kind: "sched", r: rt("alpha.ai", true, nil)}, err: ce})
+	err := result(m, nil)
+	if err == nil || !strings.Contains(err.Error(), "needed a confirmation, so it was not made") || !errors.Is(err, ce) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// The recheck before bootout wraps a ConfirmError around "could not restore the plist ...": that
+// is manual-recovery news, not a plain confirmation, and must not be dropped.
+func TestQuitAfterAWrappedConfirmationKeepsTheRecoveryAdvice(t *testing.T) {
+	m := newModel(sample())
+	m.work = &working{kind: "sched", label: "alpha.ai", cancel: func() {}}
+	m.Update(key("ctrl+c"))
+	ce := &routine.ConfirmError{Need: routine.NeedReloadRunning, Msg: "alpha.ai is running"}
+	wrapped := fmt.Errorf("could not restore the plist (backup kept at /b/x.plist; copy it back by hand): %w", ce)
+	m.Update(schedDoneMsg{p: pending{kind: "sched", r: rt("alpha.ai", true, nil)}, err: wrapped})
+	err := result(m, nil)
+	if err == nil || !strings.Contains(err.Error(), "copy it back by hand") || strings.Contains(err.Error(), "was not made") {
+		t.Errorf("err = %v", err)
 	}
 }
 

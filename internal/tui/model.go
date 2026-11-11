@@ -392,8 +392,11 @@ func (m *Model) schedDone(msg schedDoneMsg) (tea.Model, tea.Cmd) {
 	m.work = nil
 	var ce *routine.ConfirmError
 	if m.quitAfter { // the user asked to quit while this ran; the backend has ended, so quit
-		// A ConfirmError means nothing was changed; any other error is news the user must get.
-		if msg.err != nil && !errors.As(msg.err, &ce) {
+		// Every error is kept: a ConfirmError can wrap a failure that needs manual recovery
+		// (the plist could not be restored), so it is not safe to treat it as "nothing happened".
+		if _, bare := msg.err.(*routine.ConfirmError); bare {
+			m.exitErr = fmt.Errorf("%s: the schedule change needed a confirmation, so it was not made (rtm was quitting): %w", msg.p.r.Label, msg.err)
+		} else if msg.err != nil {
 			m.exitErr = fmt.Errorf("%s: the schedule change ended with an error while rtm was quitting: %w", msg.p.r.Label, msg.err)
 		}
 		m.quit = true
