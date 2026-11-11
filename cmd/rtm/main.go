@@ -1,0 +1,149 @@
+// rtm: list, track and (in later milestones) run and reschedule launchd routines.
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"text/tabwriter"
+
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/config"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/routine"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
+)
+
+const usage = `usage: rtm <command>
+
+  list [--all] [--json]   list AI routines (--all: every plist and crontab entry)
+  track <label>           mark a routine as AI by hand
+  untrack <label>         undo track
+`
+
+func main() {
+	env, err := sys.Real()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rtm:", err)
+		os.Exit(1)
+	}
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, env))
+}
+
+func run(args []string, out, errw io.Writer, env sys.Env) int {
+	if len(args) == 0 {
+		fmt.Fprint(errw, usage) // the TUI arrives in M5
+		return 2
+	}
+	var err error
+	switch args[0] {
+	case "list":
+		err = cmdList(args[1:], out, errw, env)
+	case "track", "untrack":
+		err = cmdTrack(args[0] == "track", args[1:], out, errw, env)
+	default:
+		fmt.Fprintf(errw, "rtm: unknown command %q\n\n%s", args[0], usage)
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintln(errw, "rtm:", err)
+		return 1
+	}
+	return 0
+}
+
+// discover loads the tracked list and scans; warnings go to stderr so --json stays clean.
+func discover(errw io.Writer, env sys.Env) ([]routine.Routine, error) {
+	tracked, err := config.Load(config.Path(env.Home))
+	if err != nil {
+		return nil, err
+	}
+	rs, warns := routine.Discover(env, tracked)
+	for _, w := range warns {
+		fmt.Fprintln(errw, "warning:", w)
+	}
+	return rs, nil
+}
+
+func cmdList(args []string, out, errw io.Writer, env sys.Env) error {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs.SetOutput(errw)
+	all := fs.Bool("all", false, "include non-AI entries")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rs, err := discover(errw, env)
+	if err != nil {
+		return err
+	}
+	shown := make([]routine.Routine, 0, len(rs)) // non-nil: "[]" not "null"
+	for _, r := range rs {
+		if *all || r.AI {
+			shown = append(shown, r)
+		}
+	}
+	if *asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false) // keep `>>` readable in commands
+		return enc.Encode(shown)
+	}
+	if len(shown) == 0 {
+		fmt.Fprintln(out, "no AI routines found (use --all to see everything)")
+		return nil
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "LABEL\tSOURCE\tCLASS\tEVIDENCE")
+	for _, r := range shown {
+		class, evidence := "-", ""
+		if r.AI {
+			class, evidence = "ai", r.Evidence[0].String()
+		}
+		if r.Tracked {
+			class = "ai (tracked)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Label, r.Source, class, evidence)
+	}
+	return tw.Flush()
+}
+
+func cmdTrack(add bool, args []string, out, errw io.Writer, env sys.Env) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: rtm track|untrack <label>")
+	}
+	label, path := args[0], config.Path(env.Home)
+	if !add {
+		changed, err := config.Untrack(path, label) // allowed for unknown labels so stale entries can be cleared
+		if err != nil {
+			return err
+		}
+		if !changed {
+			fmt.Fprintf(out, "%s was not tracked\n", label)
+			return nil
+		}
+		fmt.Fprintf(out, "untracked %s\n", label)
+		return nil
+	}
+	rs, err := discover(errw, env)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, r := range rs {
+		found = found || r.Label == label
+	}
+	if !found {
+		return fmt.Errorf("unknown label %q (see `rtm list --all`)", label)
+	}
+	changed, err := config.Track(path, label)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		fmt.Fprintf(out, "%s is already tracked\n", label)
+		return nil
+	}
+	fmt.Fprintf(out, "tracking %s\n", label)
+	return nil
+}

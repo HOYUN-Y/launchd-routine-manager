@@ -1,0 +1,6 @@
+# m h dom mon dow command
+MAILTO=""
+
+0 9 * * * /opt/homebrew/bin/claude -p "daily summary" >> /tmp/summary.log 2>&1
+30 18 * * 1-5 /usr/local/bin/backup-home
+@reboot   /usr/local/bin/warmup

@@ -1,0 +1,69 @@
+// Package launchd reads LaunchAgent plists. M1 is read-only.
+package launchd
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"howett.net/plist"
+)
+
+type Plist struct {
+	Label string
+	Path  string
+	Args  []string // Program (if set) followed by ProgramArguments
+}
+
+type raw struct {
+	Label            string
+	Program          string
+	ProgramArguments []string
+}
+
+// Scan reads every *.plist in dir. A missing dir is empty; unreadable files are skipped
+// with a warning.
+func Scan(dir string) (plists []Plist, warnings []string) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, []string{fmt.Sprintf("%s: %v", dir, err)}
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".plist") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		p, err := read(path)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: %v", path, err))
+			continue
+		}
+		plists = append(plists, p)
+	}
+	return plists, warnings
+}
+
+func read(path string) (Plist, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Plist{}, err
+	}
+	var r raw
+	if _, err := plist.Unmarshal(data, &r); err != nil {
+		return Plist{}, err
+	}
+	if r.Label == "" {
+		return Plist{}, errors.New("no Label")
+	}
+	args := r.ProgramArguments
+	if r.Program != "" {
+		args = append([]string{r.Program}, args...)
+	}
+	return Plist{Label: r.Label, Path: path, Args: args}, nil
+}
