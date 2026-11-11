@@ -207,7 +207,7 @@ func sample() *fakeBE {
 func TestListShowsAIOnlyAndToggles(t *testing.T) {
 	m := newModel(sample())
 	v := view(m)
-	for _, want := range []string{"alpha.ai", "gamma.ai", "delta.ai", "[a] AI만", "LABEL", "다음 실행", "실행 중", "미로드", "종료 0", "enter 상세", "q 종료"} {
+	for _, want := range []string{"alpha.ai", "gamma.ai", "delta.ai", "AI만 · ", "LABEL", "다음 실행", "실행 중", "미로드", "종료 0", "enter 상세", "q 종료"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("missing %q in\n%s", want, v)
 		}
@@ -216,11 +216,11 @@ func TestListShowsAIOnlyAndToggles(t *testing.T) {
 		t.Errorf("a non-AI routine must be hidden by default:\n%s", v)
 	}
 	press(m, "a")
-	if v := view(m); !strings.Contains(v, "beta.plain") || !strings.Contains(v, "[a] 전체") {
+	if v := view(m); !strings.Contains(v, "beta.plain") || !strings.Contains(v, "전체 · ") {
 		t.Errorf("a must show everything:\n%s", v)
 	}
 	press(m, "a")
-	if v := view(m); strings.Contains(v, "beta.plain") || !strings.Contains(v, "[a] AI만") {
+	if v := view(m); strings.Contains(v, "beta.plain") || !strings.Contains(v, "AI만 · ") {
 		t.Errorf("a must toggle back:\n%s", v)
 	}
 }
