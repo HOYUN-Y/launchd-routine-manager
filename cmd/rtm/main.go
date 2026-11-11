@@ -21,6 +21,8 @@ const usage = `usage: rtm <command>
 
   list [--all] [--json]          list AI routines (--all: every plist and crontab entry)
   show <label> [--json]          details: schedule, next run, state, logs, command
+  run <label> [--restart] [--yes] [--load] [--wait 10s]
+                                 start a routine now via launchctl kickstart
   logs <label> [-n 50] [-f]      last lines of the routine's log files
   track <label>                  mark a routine as AI by hand
   untrack <label>                undo track
@@ -51,6 +53,8 @@ func run(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) i
 		err = cmdList(args[1:], out, errw, env)
 	case "show":
 		err = cmdShow(args[1:], out, errw, env)
+	case "run":
+		err = cmdRun(args[1:], out, errw, env)
 	case "logs":
 		err = cmdLogs(ctx, args[1:], out, errw, env)
 	case "doctor":

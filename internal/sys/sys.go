@@ -61,15 +61,22 @@ type Result struct {
 }
 
 // FakeRunner replies from Results keyed by the full command line; any other command is an
-// error, so a test can't reach the real system by accident.
+// error, so a test can't reach the real system by accident. Queue holds replies for one
+// command that change over time (e.g. `launchctl print` while a job starts and finishes):
+// they are used in order, then Results takes over.
 type FakeRunner struct {
 	Results map[string]Result
+	Queue   map[string][]Result
 	Calls   []string
 }
 
 func (f *FakeRunner) Run(name string, args ...string) (string, error) {
 	key := strings.Join(append([]string{name}, args...), " ")
 	f.Calls = append(f.Calls, key)
+	if q := f.Queue[key]; len(q) > 0 {
+		f.Queue[key] = q[1:]
+		return q[0].Out, q[0].Err
+	}
 	r, ok := f.Results[key]
 	if !ok {
 		return "", fmt.Errorf("fake runner: unexpected command %q", key)
