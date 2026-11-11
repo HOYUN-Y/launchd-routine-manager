@@ -179,7 +179,7 @@ TUI는 열려 있을 때만 돌기 때문에 이력은 별도 수집기가 맡�
 - plist 읽기·쓰기: `howett.net/plist`. 쓰기 후 `plutil -lint`로 한 번 더 검증한다
 - 외부 명령: `launchctl`, `plutil`, `crontab`을 `os/exec`로 호출한다
 - 이력 저장: SQLite(cgo가 필요 없는 `modernc.org/sqlite`)
-- 설정·상태 경로: 설정은 `~/.config/rtm/config.toml`, 이력과 백업은 `~/.local/state/rtm/`
+- 설정·상태 경로: 설정은 `~/.config/rtm/config.json`(표준 라이브러리로 읽고 쓰며, 모르는 키는 보존), 이력과 백업은 `~/.local/state/rtm/`
 
 대안으로 Python + Textual도 검토했다. 개발은 빠르지만 맥마다 파이썬 환경이 필요해서 배포 조건에 맞지 않는다.
 

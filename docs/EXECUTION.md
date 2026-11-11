@@ -71,7 +71,7 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 
 - `~/Library/LaunchAgents`, `/Library/LaunchAgents`의 plist와 `crontab -l`을 읽는다. 읽을 수 없는 파일은 건너뛰고 경고만 남긴다
 - 분류 규칙은 PLAN.md 3장. 결과에 근거(파일 경로, 줄)를 포함한다
-- 수동 추적 목록: `~/.config/rtm/config.toml`의 `tracked = ["label", …]`. `rtm track`/`untrack`
+- 수동 추적 목록: `~/.config/rtm/config.json`의 `{"tracked": ["label", …]}`(파싱 실패 시 쓰기 거부, 모르는 키 보존). crontab 항목의 식별자는 줄 번호가 아니라 일정+명령의 해시(`cron:<8자리>`). `rtm track`/`untrack`
 - `rtm list`는 기본 AI 루틴만, `--all`은 전체. `--json` 지원
 - 테스트: `testdata/`의 plist 3종(claude 직접 호출, 셸 스크립트 래핑, 무관한 항목)이 각각 AI·AI(근거: 스크립트 n번째 줄)·비AI로 분류된다. crontab 샘플 2줄(claude 포함/미포함)도 같은 방식
 
@@ -155,4 +155,9 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 
 | 시각 | 내용 |
 |---|---|
-| 2026-11-12 | Go 1.27.4 설치, 실행 계획 작성. 사용자 지시: 무인으로 끝까지 진행, TUI 미감은 감독 담당 |
+| 2026-11-12 | Go 1.27.4 설치, 실행 계획 작성. 사용자 지시: 무인으로 끝까지 진행, TUI 미감은 감독 담당(`insight-design-theme` 스킬 참고) |
+| 2026-11-12 | 세션 시작: `rtm-impl` = `w1S:p2`(Sonnet 5.5), `rtm-review` = `w1S:p3`(GPT-6.1-Sol medium). 두 폴더 신뢰 승인 |
+| 2026-11-12 | 결정: 무인 진행 중 승인 대기로 멈추지 않도록 `rtm-impl`을 auto mode로 전환. 안전 규칙은 지시문과 검수로 확인 |
+| 2026-11-12 | 스킬 초안 `skills/launchd-routine-create/SKILL.md` 커밋(7234d1d). plist 예시 `plutil -lint` 통과 |
+| 2026-11-12 | M1 커밋 7be1818. 감독 확인: vet/test 통과, 실제 맥 `rtm list --all` 동작. "no Label" 경고 4건은 실제 빈 plist라 정상. ctx 14%. Codex 검수 지시, M2 지시 |
+| 2026-11-12 | M1 검수(Codex): P0 config 정규식 손상, P1 따옴표 경로 분류 누락, P1 cron 줄번호 식별자, P2 직접 호출 근거. 감독 판단: 전부 수용. 결정: 설정을 config.json(표준 라이브러리)으로 변경, cron 식별자를 해시로. M2 완료 후 수정 지시 예정 |
