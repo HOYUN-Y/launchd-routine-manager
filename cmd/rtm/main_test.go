@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -14,7 +15,7 @@ import (
 
 func exec(t *testing.T, env sys.Env, args ...string) (code int, out, errw string) {
 	var o, e bytes.Buffer
-	code = run(args, &o, &e, env)
+	code = run(context.Background(), args, &o, &e, env)
 	return code, o.String(), e.String()
 }
 

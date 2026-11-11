@@ -2,23 +2,29 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"text/tabwriter"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/config"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/routine"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
 
 const usage = `usage: rtm <command>
 
-  list [--all] [--json]   list AI routines (--all: every plist and crontab entry)
-  track <label>           mark a routine as AI by hand
-  untrack <label>         undo track
+  list [--all] [--json]          list AI routines (--all: every plist and crontab entry)
+  show <label> [--json]          details: schedule, next run, state, logs, command
+  logs <label> [-n 50] [-f]      last lines of the routine's log files
+  track <label>                  mark a routine as AI by hand
+  untrack <label>                undo track
+  doctor [--json]                check claude/codex paths, LaunchAgents access, launchctl
 `
 
 func main() {
@@ -27,10 +33,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "rtm:", err)
 		os.Exit(1)
 	}
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, env))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr, env)
+	stop()
+	os.Exit(code)
 }
 
-func run(args []string, out, errw io.Writer, env sys.Env) int {
+func run(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) int {
 	if len(args) == 0 {
 		fmt.Fprint(errw, usage) // the TUI arrives in M5
 		return 2
@@ -39,6 +49,12 @@ func run(args []string, out, errw io.Writer, env sys.Env) int {
 	switch args[0] {
 	case "list":
 		err = cmdList(args[1:], out, errw, env)
+	case "show":
+		err = cmdShow(args[1:], out, errw, env)
+	case "logs":
+		err = cmdLogs(ctx, args[1:], out, errw, env)
+	case "doctor":
+		err = cmdDoctor(args[1:], out, errw, env)
 	case "track", "untrack":
 		err = cmdTrack(args[0] == "track", args[1:], out, errw, env)
 	default:
@@ -65,6 +81,28 @@ func discover(errw io.Writer, env sys.Env) ([]routine.Routine, error) {
 	return rs, nil
 }
 
+// parse lets flags come before or after positional args: `rtm show <label> --json`.
+func parse(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return pos, nil
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
+func writeJSON(out io.Writer, v any) error {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // keep `>>` readable in commands
+	return enc.Encode(v)
+}
+
 func cmdList(args []string, out, errw io.Writer, env sys.Env) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(errw)
@@ -83,18 +121,19 @@ func cmdList(args []string, out, errw io.Writer, env sys.Env) error {
 			shown = append(shown, r)
 		}
 	}
+	for i := range shown {
+		routine.Enrich(env, &shown[i])
+	}
 	if *asJSON {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		enc.SetEscapeHTML(false) // keep `>>` readable in commands
-		return enc.Encode(shown)
+		return writeJSON(out, shown)
 	}
 	if len(shown) == 0 {
 		fmt.Fprintln(out, "no AI routines found (use --all to see everything)")
 		return nil
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "LABEL\tSOURCE\tCLASS\tEVIDENCE")
+	fmt.Fprintln(tw, "LABEL\tSOURCE\tCLASS\tSCHEDULE\tSTATE\tNEXT\tEVIDENCE")
+	now := env.Clock()
 	for _, r := range shown {
 		class, evidence := "-", ""
 		if r.AI {
@@ -103,7 +142,11 @@ func cmdList(args []string, out, errw io.Writer, env sys.Env) error {
 		if r.Tracked {
 			class = "ai (tracked)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Label, r.Source, class, evidence)
+		next := "-"
+		if r.NextRun != nil {
+			next = schedule.Relative(*r.NextRun, now)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Label, r.Source, class, r.Schedule, r.StateText(), next, evidence)
 	}
 	return tw.Flush()
 }

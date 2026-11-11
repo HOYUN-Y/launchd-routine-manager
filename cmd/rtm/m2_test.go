@@ -1,0 +1,290 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/routine"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
+)
+
+var pinned = time.Date(2026, 11, 12, 10, 30, 0, 0, time.UTC)
+
+// m2Env pins the clock and uid, and makes `launchctl print` for the given labels return the
+// running.txt sample. Every other label "fails" (= not loaded).
+func m2Env(t *testing.T, loaded ...string) sys.Env {
+	env := testEnv(t)
+	env.UID, env.Now = 501, func() time.Time { return pinned }
+	b, err := os.ReadFile("../../testdata/launchctl/running.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := env.Runner.(*sys.FakeRunner)
+	for _, l := range loaded {
+		fr.Results[fmt.Sprintf("launchctl print gui/501/%s", l)] = sys.Result{Out: string(b)}
+	}
+	return env
+}
+
+func writePlist(t *testing.T, env sys.Env, label, extra string) {
+	t.Helper()
+	body := fmt.Sprintf(`<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>%s</string>
+<key>ProgramArguments</key><array><string>/usr/bin/true</string></array>%s</dict></plist>`, label, extra)
+	if err := os.WriteFile(filepath.Join(env.Home, "Library", "LaunchAgents", label+".plist"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListShowsStateAndNext(t *testing.T) {
+	env := m2Env(t, "dev.rtm.test.claude-direct")
+	code, out, errw := exec(t, env, "list")
+	if code != 0 || errw != "" {
+		t.Fatalf("code=%d err=%q", code, errw)
+	}
+	for _, want := range []string{"SCHEDULE", "STATE", "NEXT", "daily 09:00", "running", "tomorrow 09:00"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+	_, all, _ := exec(t, env, "list", "--all")
+	if !strings.Contains(all, "not loaded") {
+		t.Errorf("unloaded plist should say so:\n%s", all)
+	}
+}
+
+func TestShowText(t *testing.T) {
+	code, out, _ := exec(t, m2Env(t, "dev.rtm.test.claude-direct"), "show", "dev.rtm.test.claude-direct")
+	if code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	for _, want := range []string{
+		"label:      dev.rtm.test.claude-direct",
+		"class:      AI", "- direct: /opt/homebrew/bin/claude",
+		"schedule:   daily 09:00", "next run:   2026-11-13 09:00:00",
+		"state:      running (pid 4859)", "runs:       1", "last exit:  never exited",
+		"command:    /opt/homebrew/bin/claude -p /changelog-update",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+}
+
+func TestShowJSONFlagAfterLabel(t *testing.T) {
+	code, out, errw := exec(t, m2Env(t, "dev.rtm.test.claude-direct"), "show", "dev.rtm.test.claude-direct", "--json")
+	if code != 0 || errw != "" {
+		t.Fatalf("code=%d err=%q", code, errw)
+	}
+	var r routine.Routine
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if r.Status == nil || r.Status.PID != 4859 || !r.Status.Loaded || r.NextRun == nil {
+		t.Errorf("r = %+v", r)
+	}
+	for _, key := range []string{`"status"`, `"next_run"`, `"pid"`} { // last_exit_code is omitted: never exited
+		if !strings.Contains(out, key) {
+			t.Errorf("missing %s", key)
+		}
+	}
+}
+
+func TestShowNotLoadedAndErrors(t *testing.T) {
+	env := m2Env(t)
+	if code, out, _ := exec(t, env, "show", "dev.rtm.test.unrelated"); code != 0 || !strings.Contains(out, "state:      not loaded") {
+		t.Fatalf("code=%d\n%s", code, out)
+	}
+	if code, _, errw := exec(t, env, "show", "nope"); code != 1 || !strings.Contains(errw, "unknown label") {
+		t.Fatalf("code=%d %q", code, errw)
+	}
+	if code, _, errw := exec(t, env, "show"); code != 1 || !strings.Contains(errw, "usage") {
+		t.Fatalf("code=%d %q", code, errw)
+	}
+	if code, out, _ := exec(t, env, "show", "cron:4"); code != 0 || !strings.Contains(out, "n/a (crontab keeps no state)") {
+		t.Fatalf("cron show: code=%d\n%s", code, out)
+	}
+}
+
+func numbered(n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	return b.String()
+}
+
+func TestLogsLastN(t *testing.T) {
+	env := m2Env(t)
+	logf := filepath.Join(t.TempDir(), "o.log")
+	os.WriteFile(logf, []byte(numbered(120)), 0o644)
+	writePlist(t, env, "dev.rtm.test.logs", fmt.Sprintf("<key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string>", logf, logf))
+
+	_, out, _ := exec(t, env, "logs", "dev.rtm.test.logs", "-n", "3") // label first, flags after
+	if out != "line 118\nline 119\nline 120\n" {
+		t.Fatalf("out = %q (same file for stdout/stderr: no header, printed once)", out)
+	}
+	_, out, _ = exec(t, env, "logs", "-n", "2", "dev.rtm.test.logs") // flags first
+	if out != "line 119\nline 120\n" {
+		t.Fatalf("out = %q", out)
+	}
+	if _, out, _ = exec(t, env, "logs", "dev.rtm.test.logs"); strings.Count(out, "\n") != 50 {
+		t.Errorf("default is 50 lines, got %d", strings.Count(out, "\n"))
+	}
+}
+
+func TestLogsTwoFilesAndMissing(t *testing.T) {
+	env := m2Env(t)
+	dir := t.TempDir()
+	o, e := filepath.Join(dir, "o.log"), filepath.Join(dir, "e.log")
+	os.WriteFile(o, []byte("out1\nout2\n"), 0o644)
+	writePlist(t, env, "dev.rtm.test.two", fmt.Sprintf("<key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string>", o, e))
+	_, out, _ := exec(t, env, "logs", "dev.rtm.test.two", "-n", "1")
+	want := fmt.Sprintf("==> %s <==\nout2\n==> %s <==\n(log file does not exist yet: %s)\n", o, e, e)
+	if out != want {
+		t.Fatalf("out =\n%s\nwant\n%s", out, want)
+	}
+}
+
+func TestLogsNoPath(t *testing.T) {
+	code, _, errw := exec(t, m2Env(t), "logs", "dev.rtm.test.claude-direct")
+	if code != 1 || !strings.Contains(errw, "no log path") {
+		t.Fatalf("code=%d %q", code, errw)
+	}
+	if code, _, _ := exec(t, m2Env(t), "logs", "nope"); code != 1 {
+		t.Fatal("unknown label must fail")
+	}
+}
+
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+func TestLogsFollow(t *testing.T) {
+	followEvery = 10 * time.Millisecond
+	defer func() { followEvery = 500 * time.Millisecond }()
+	env := m2Env(t)
+	logf := filepath.Join(t.TempDir(), "f.log")
+	os.WriteFile(logf, []byte("old1\nold2\n"), 0o644)
+	writePlist(t, env, "dev.rtm.test.follow", "<key>StandardOutPath</key><string>"+logf+"</string>")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := &lockedBuf{}
+	done := make(chan int)
+	go func() {
+		done <- run(ctx, []string{"logs", "dev.rtm.test.follow", "-n", "1", "-f"}, out, &bytes.Buffer{}, env)
+	}()
+
+	waitFor := func(s string) {
+		for i := 0; i < 300; i++ {
+			if strings.Contains(out.String(), s) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %q, got %q", s, out.String())
+	}
+	waitFor("old2")
+	f, _ := os.OpenFile(logf, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("new1\n")
+	waitFor("new1")
+	f.Close()
+	os.WriteFile(logf, []byte("rotated\n"), 0o644) // truncated: re-read from the start
+	waitFor("rotated")
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("-f did not stop on cancel")
+	}
+	if strings.Contains(out.String(), "old1") {
+		t.Errorf("-n 1 must not print old1: %q", out.String())
+	}
+}
+
+func TestTail(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "t.log")
+	check := func(content string, n int, want string, wantSize int) {
+		t.Helper()
+		os.WriteFile(p, []byte(content), 0o644)
+		lines, size, err := tail(p, n)
+		if err != nil || strings.Join(lines, "|") != want || size != int64(wantSize) {
+			t.Errorf("tail(%q,%d) = %q size=%d err=%v, want %q size=%d", content, n, lines, size, err, want, wantSize)
+		}
+	}
+	check("", 5, "", 0)
+	check("a\nb\nc\n", 2, "b|c", 6)
+	check("a\nb\nc", 2, "b|c", 5) // no trailing newline
+	check("a\nb\n", 10, "a|b", 4) // fewer lines than n
+	check("a\nb\n", 0, "", 4)
+
+	big := numbered(20000) // ~190KB: needs more than one 64KB chunk
+	os.WriteFile(p, []byte(big), 0o644)
+	lines, _, _ := tail(p, 15000)
+	if len(lines) != 15000 || lines[0] != "line 5001" || lines[14999] != "line 20000" {
+		t.Errorf("big tail: %d lines, first %q last %q", len(lines), lines[0], lines[len(lines)-1])
+	}
+	if _, _, err := tail(filepath.Join(t.TempDir(), "nope"), 3); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestDoctorCLI(t *testing.T) {
+	env := m2Env(t)
+	fr := env.Runner.(*sys.FakeRunner)
+	fr.Results["zsh -lc command -v claude"] = sys.Result{Out: "/opt/x/claude\n"}
+	fr.Results["zsh -lc command -v codex"] = sys.Result{Err: errors.New("exit status 1")}
+	fr.Results["launchctl managername"] = sys.Result{Out: "Aqua\n"}
+
+	code, out, _ := exec(t, env, "doctor")
+	if code != 0 || !strings.Contains(out, "[ok  ] claude") || !strings.Contains(out, "[warn] codex") || !strings.Contains(out, "uid=501") {
+		t.Fatalf("code=%d\n%s", code, out)
+	}
+	code, out, _ = exec(t, env, "doctor", "--json")
+	var checks []map[string]string
+	if code != 0 || json.Unmarshal([]byte(out), &checks) != nil || len(checks) != 7 {
+		t.Fatalf("code=%d len=%d\n%s", code, len(checks), out)
+	}
+
+	fr.Results["launchctl managername"] = sys.Result{Err: errors.New("boom")}
+	if code, out, _ := exec(t, env, "doctor"); code != 1 || !strings.Contains(out, "[fail] launchctl") {
+		t.Fatalf("code=%d\n%s", code, out)
+	}
+}
+
+// Safety rule: M2 runs only read-only commands, whatever the subcommand.
+func TestOnlyReadOnlyCommands(t *testing.T) {
+	env := m2Env(t, "dev.rtm.test.claude-direct")
+	fr := env.Runner.(*sys.FakeRunner)
+	fr.Results["zsh -lc command -v claude"] = sys.Result{}
+	fr.Results["zsh -lc command -v codex"] = sys.Result{}
+	fr.Results["launchctl managername"] = sys.Result{Out: "Aqua\n"}
+	for _, args := range [][]string{{"list", "--all"}, {"show", "dev.rtm.test.claude-direct"}, {"doctor"}, {"logs", "dev.rtm.test.claude-direct"}} {
+		exec(t, env, args...)
+	}
+	for _, c := range fr.Calls {
+		ok := c == "crontab -l" || c == "launchctl managername" || strings.HasPrefix(c, "launchctl print ") || strings.HasPrefix(c, "zsh -lc command -v ")
+		if !ok {
+			t.Errorf("non-read-only command ran: %q", c)
+		}
+	}
+}

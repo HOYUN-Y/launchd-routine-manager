@@ -2,8 +2,14 @@ package routine
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/launchd"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/testutil"
 )
@@ -74,5 +80,99 @@ func TestCrontabFailureIsWarning(t *testing.T) {
 	rs, warns := Discover(e, nil)
 	if len(warns) != 1 || len(rs) != 3 {
 		t.Fatalf("rs=%d warns=%v", len(rs), warns)
+	}
+}
+
+var pinned = time.Date(2026, 11, 12, 10, 30, 0, 0, time.UTC)
+
+func running(t *testing.T) sys.Result {
+	b, err := os.ReadFile("../../testdata/launchctl/running.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sys.Result{Out: string(b)}
+}
+
+func TestEnrichLoaded(t *testing.T) {
+	e, fr := env(t, sys.Result{Out: testutil.Crontab(t)})
+	e.UID, e.Now = 501, func() time.Time { return pinned }
+	fr.Results["launchctl print gui/501/dev.rtm.test.claude-direct"] = running(t)
+
+	rs, _ := Discover(e, nil)
+	r, _ := Find(rs, "dev.rtm.test.claude-direct")
+	Enrich(e, &r)
+
+	if r.Status == nil || !r.Status.Loaded || r.Status.PID != 4859 || r.StateText() != "running" {
+		t.Fatalf("status = %+v", r.Status)
+	}
+	if r.NextRun == nil || !r.NextRun.Equal(time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)) {
+		t.Errorf("next = %v (plist says daily 09:00, now is 10:30)", r.NextRun)
+	}
+	if r.Schedule != "daily 09:00" {
+		t.Errorf("schedule = %q", r.Schedule)
+	}
+	// plist has no log paths, so they come from launchctl print
+	if r.StdoutPath != "/Users/me/.hermes/logs/gateway.log" {
+		t.Errorf("stdout = %q", r.StdoutPath)
+	}
+	for _, c := range fr.Calls {
+		if c != "crontab -l" && !strings.HasPrefix(c, "launchctl print ") {
+			t.Errorf("unexpected command %q", c)
+		}
+	}
+}
+
+func TestEnrichNotLoadedAndCron(t *testing.T) {
+	e, _ := env(t, sys.Result{Out: testutil.Crontab(t)})
+	e.UID, e.Now = 501, func() time.Time { return pinned }
+	rs, _ := Discover(e, nil)
+
+	r, _ := Find(rs, "dev.rtm.test.unrelated") // fake has no launchctl reply -> print "fails"
+	Enrich(e, &r)
+	if r.Status == nil || r.Status.Loaded || r.StateText() != "not loaded" || r.NextRun != nil {
+		t.Errorf("not loaded: %+v next=%v", r.Status, r.NextRun)
+	}
+
+	c, _ := Find(rs, "cron:4")
+	Enrich(e, &c)
+	if c.Status != nil || c.StateText() != "-" {
+		t.Errorf("cron has no state: %+v", c.Status)
+	}
+}
+
+func TestStateText(t *testing.T) {
+	one, zero := 1, 0
+	for want, st := range map[string]*launchd.Status{
+		"running":    {Loaded: true, State: "running", PID: 5},
+		"exit 1":     {Loaded: true, State: "not running", LastExitCode: &one},
+		"exit 0":     {Loaded: true, State: "not running", LastExitCode: &zero},
+		"loaded":     {Loaded: true, State: "spawn scheduled"},
+		"not loaded": {},
+	} {
+		if got := (Routine{Status: st}).StateText(); got != want {
+			t.Errorf("got %q want %q", got, want)
+		}
+	}
+}
+
+func TestEnrichLastRunFromLogMtime(t *testing.T) {
+	e, _ := env(t, sys.Result{Out: testutil.Crontab(t)})
+	e.UID, e.Now = 501, func() time.Time { return pinned }
+	logf := filepath.Join(t.TempDir(), "x.log")
+	os.WriteFile(logf, []byte("hi\n"), 0o644)
+	mt := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	os.Chtimes(logf, mt, mt)
+
+	r := Routine{Label: "x", Source: SourceUser, StdoutPath: logf, StderrPath: logf,
+		spec: schedule.Spec{Interval: 3600}}
+	Enrich(e, &r)
+	if r.LastRun == nil || !r.LastRun.Equal(mt) {
+		t.Fatalf("last run = %v", r.LastRun)
+	}
+	if r.NextRun == nil || !r.NextRun.Equal(mt.Add(time.Hour)) {
+		t.Errorf("next = %v, want last+1h", r.NextRun)
+	}
+	if got := r.LogPaths(); len(got) != 1 {
+		t.Errorf("same stdout/stderr must be one log path: %v", got)
 	}
 }

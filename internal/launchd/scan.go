@@ -10,18 +10,29 @@ import (
 	"strings"
 
 	"howett.net/plist"
+
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
 )
 
 type Plist struct {
-	Label string
-	Path  string
-	Args  []string // Program (if set) followed by ProgramArguments
+	Label      string
+	Path       string
+	Args       []string // Program (if set) followed by ProgramArguments
+	Schedule   schedule.Spec
+	StdoutPath string
+	StderrPath string
 }
 
 type raw struct {
-	Label            string
-	Program          string
-	ProgramArguments []string
+	Label                 string
+	Program               string
+	ProgramArguments      []string
+	StartCalendarInterval any // dict or array of dicts
+	StartInterval         int
+	RunAtLoad             bool
+	KeepAlive             any // bool or dict of conditions
+	StandardOutPath       string
+	StandardErrorPath     string
 }
 
 // Scan reads every *.plist in dir. A missing dir is empty; unreadable files are skipped
@@ -65,5 +76,19 @@ func read(path string) (Plist, error) {
 	if r.Program != "" {
 		args = append([]string{r.Program}, args...)
 	}
-	return Plist{Label: r.Label, Path: path, Args: args}, nil
+	keepAlive := false
+	switch k := r.KeepAlive.(type) {
+	case bool:
+		keepAlive = k
+	case map[string]any:
+		keepAlive = true // conditional KeepAlive still means "launchd keeps it up"
+	}
+	return Plist{
+		Label: r.Label, Path: path, Args: args,
+		Schedule: schedule.Spec{
+			Calendars: schedule.ParseCalendars(r.StartCalendarInterval),
+			Interval:  r.StartInterval, RunAtLoad: r.RunAtLoad, KeepAlive: keepAlive,
+		},
+		StdoutPath: r.StandardOutPath, StderrPath: r.StandardErrorPath,
+	}, nil
 }

@@ -1,0 +1,48 @@
+gui/501/com.openai.atlas.update-helper = {
+	active count = 0
+	path = /Users/me/Library/LaunchAgents/com.openai.atlas.update-helper.plist
+	type = LaunchAgent
+	state = not running
+
+	program = /Applications/ChatGPT Atlas.app/Contents/Library/AtlasUpdateHelper
+	arguments = {
+		/Applications/ChatGPT Atlas.app/Contents/Library/AtlasUpdateHelper
+	}
+
+	stdout path = /Users/me/Library/Logs/AtlasUpdateHelper.log
+	stderr path = /Users/me/Library/Logs/AtlasUpdateHelper.log
+
+
+
+	domain = gui/501 [100021]
+	asid = 100021
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	last exit code = 1
+
+
+	event channels = {
+		"com.apple.launchd.helper" = {
+			port = 0x0
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 0
+		}
+	}
+
+
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	run interval = 3600 seconds
+
+	properties = runatload | penalty box | inferred program | managed LWCR | has LWCR
+}

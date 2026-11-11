@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Runner is the single door to external commands (launchctl, plutil, crontab, zsh -lc).
@@ -22,6 +23,14 @@ type Env struct {
 	UID             int
 	SystemAgentsDir string // /Library/LaunchAgents; read-only for rtm
 	Runner          Runner
+	Now             func() time.Time // nil means time.Now; tests pin it
+}
+
+func (e Env) Clock() time.Time {
+	if e.Now == nil {
+		return time.Now()
+	}
+	return e.Now()
 }
 
 func Real() (Env, error) {

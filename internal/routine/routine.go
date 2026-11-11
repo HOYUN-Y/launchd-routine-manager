@@ -8,10 +8,12 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/classify"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/cron"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/launchd"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
 
@@ -27,11 +29,20 @@ type Routine struct {
 	Source   string              `json:"source"`
 	Path     string              `json:"path,omitempty"`     // plist path
 	Line     int                 `json:"line,omitempty"`     // crontab line
-	Schedule string              `json:"schedule,omitempty"` // cron only until M2
+	Schedule string              `json:"schedule,omitempty"` // plist: readable text; cron: the expression
 	Command  []string            `json:"command"`
 	AI       bool                `json:"ai"`
 	Tracked  bool                `json:"tracked"`
 	Evidence []classify.Evidence `json:"evidence"`
+
+	// Filled by Enrich (plist routines only; crontab has no state).
+	Status     *launchd.Status `json:"status,omitempty"`
+	NextRun    *time.Time      `json:"next_run,omitempty"`
+	LastRun    *time.Time      `json:"last_run,omitempty"` // estimated from the log files' mtime
+	StdoutPath string          `json:"stdout_path,omitempty"`
+	StderrPath string          `json:"stderr_path,omitempty"`
+
+	spec schedule.Spec
 }
 
 // Discover scans everything and returns routines sorted by label, plus non-fatal warnings.
@@ -46,7 +57,11 @@ func Discover(env sys.Env, tracked []string) ([]Routine, []string) {
 		plists, w := launchd.Scan(d.dir)
 		warns = append(warns, w...)
 		for _, p := range plists {
-			out = append(out, Routine{Label: p.Label, Source: d.source, Path: p.Path, Command: p.Args})
+			out = append(out, Routine{
+				Label: p.Label, Source: d.source, Path: p.Path, Command: p.Args,
+				Schedule: p.Schedule.Describe(), spec: p.Schedule,
+				StdoutPath: p.StdoutPath, StderrPath: p.StderrPath,
+			})
 		}
 	}
 
@@ -85,4 +100,69 @@ func Discover(env sys.Env, tracked []string) ([]Routine, []string) {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out, warns
+}
+
+// Enrich asks launchd (read-only `launchctl print`) and fills status, log paths, last run and
+// next run. Call it only for routines you are about to show.
+func Enrich(env sys.Env, r *Routine) {
+	if r.Source == SourceCron {
+		return
+	}
+	st := launchd.Query(env.Runner, env.UID, r.Label)
+	r.Status = &st
+	if r.StdoutPath == "" {
+		r.StdoutPath = st.StdoutPath
+	}
+	if r.StderrPath == "" {
+		r.StderrPath = st.StderrPath
+	}
+	var last time.Time
+	for _, p := range r.LogPaths() {
+		if fi, err := os.Stat(p); err == nil && fi.ModTime().After(last) {
+			last = fi.ModTime()
+		}
+	}
+	if !last.IsZero() {
+		r.LastRun = &last
+	}
+	if t, ok := r.spec.Next(env.Clock(), last); ok {
+		r.NextRun = &t
+	}
+}
+
+// LogPaths returns the distinct log files (stdout and stderr are often the same file).
+func (r Routine) LogPaths() []string {
+	var out []string
+	for _, p := range []string{r.StdoutPath, r.StderrPath} {
+		if p != "" && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// StateText is the short state shown in `rtm list`.
+func (r Routine) StateText() string {
+	st := r.Status
+	switch {
+	case st == nil:
+		return "-" // crontab: no state
+	case !st.Loaded:
+		return "not loaded"
+	case st.State == "running":
+		return "running"
+	case st.LastExitCode != nil:
+		return fmt.Sprintf("exit %d", *st.LastExitCode)
+	}
+	return "loaded"
+}
+
+// Find returns the routine with this label (user agents come before system agents).
+func Find(rs []Routine, label string) (Routine, bool) {
+	for _, r := range rs {
+		if r.Label == label {
+			return r, true
+		}
+	}
+	return Routine{}, false
 }
