@@ -170,3 +170,4 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 | 2026-11-12 | Codex: M3 재검수 4건 해결, 조회 명령 취소 미적용(P1) 부분. M5: P0 t 연타 시 config.json 동시 쓰기 유실, P1 일정 변경 중 Ctrl-C로 즉시 종료, P1 늦은 로그 응답이 화면 덮음, P1 따라가기 tick 중복. 감독 판단: M5 전부 수용, 조회 취소는 외부 명령 제한 시간으로 부분 수용(shortcut). |
 | 2026-11-12 | M5-style a94b056(브랜치 style/tui, 감독): insight-design-theme terminal 스타일 적용. 전면 Navy 800(Paint), 머리줄·표 머리 Navy 950 띠, 도움말 Navy 900 띠, 금색은 실패·진행 칸·확인 상자만, 직각 테두리, 선택 행 끝까지(Fill). tmux 캡처→HTML→헤드리스 Chrome으로 화면 확인(테스트 라벨만 사용, 로드 안 함). 테스트 -race 통과 |
 | 2026-11-12 | M4-fix 58d720e. style/tui를 impl/rtm에 병합(72bcd8a). 감독 확인: -race, RTM_INTEGRATION=1 통과, 실제 plist 불변, 흔적 0. ctx 64%: 기준(65%) 직전이고 다음 작업 중 넘을 것이 확실해 idle인 지금 /compact 실행(→0%). 결정 근거: 작업 도중 압축을 피하려는 원칙. M5 수정 5건 지시, Codex에 M4 재검수+스타일 기능 회귀 검수 지시 |
+| 2026-11-12 | Codex: M4 재검수 5건 모두 해결, 잔여 P0·P1 없음. 스타일 검수 P0·P1 없음, P2 1건(ESC[m·ESC[49m 리셋 뒤 배경 미복구) → 감독이 SGR 파라미터 해석으로 수정(style/tui, 테스트 추가) |
