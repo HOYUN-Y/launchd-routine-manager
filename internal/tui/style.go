@@ -5,6 +5,8 @@ package tui
 // Minimal on purpose: the look is refined here, by hand, without touching the screens.
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -188,7 +190,57 @@ func Paint(screen string, w int) string {
 		if pad := w - lipgloss.Width(l); pad > 0 {
 			l += spaces(pad)
 		}
-		lines[i] = seq + strings.ReplaceAll(l, "\x1b[0m", "\x1b[0m"+seq) + "\x1b[0m"
+		lines[i] = seq + sgr.ReplaceAllStringFunc(l, func(m string) string {
+			if clearsBackground(m[2 : len(m)-1]) {
+				return m + seq
+			}
+			return m
+		}) + "\x1b[0m"
 	}
 	return strings.Join(lines, "\n")
+}
+
+var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// clearsBackground reports whether an SGR parameter list (the part between "ESC[" and "m")
+// leaves the default background behind: a full reset ("", "0") or "49". The colour operands
+// of 38/48 (5;n or 2;r;g;b) are skipped, so the 0 in "38;5;0" is not mistaken for a reset.
+func clearsBackground(params string) bool {
+	if params == "" {
+		return true
+	}
+	ps := strings.Split(params, ";")
+	cleared := false
+	for i := 0; i < len(ps); i++ {
+		n, err := strconv.Atoi(ps[i])
+		if ps[i] == "" {
+			n, err = 0, nil // an empty field means 0
+		}
+		if err != nil {
+			continue
+		}
+		switch {
+		case n == 0 || n == 49:
+			cleared = true
+		case n == 48:
+			cleared = false // a new background is set; it stays until the next reset
+			i += skipColour(ps, i)
+		case n == 38 || n == 58:
+			i += skipColour(ps, i)
+		}
+	}
+	return cleared
+}
+
+// skipColour is how many fields after ps[i] (38/48/58) belong to its colour operand.
+func skipColour(ps []string, i int) int {
+	if i+1 < len(ps) {
+		switch ps[i+1] {
+		case "5":
+			return 2
+		case "2":
+			return 4
+		}
+	}
+	return 0
 }
