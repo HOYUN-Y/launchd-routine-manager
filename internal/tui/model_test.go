@@ -893,9 +893,42 @@ func TestCtrlCDuringAScheduleChangeQuitsAfterAFailureToo(t *testing.T) {
 	m := newModel(sample())
 	m.work = &working{kind: "sched", label: "alpha.ai", cancel: func() {}}
 	m.Update(key("ctrl+c"))
-	_, cmd := m.Update(schedDoneMsg{p: pending{kind: "sched"}, err: errors.New("boom")})
+	_, cmd := m.Update(schedDoneMsg{p: pending{kind: "sched", r: rt("alpha.ai", true, nil)}, err: errors.New("boom: NOT loaded")})
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Error("expected quit")
+	}
+	// the error must survive the quit: Run hands it to the caller, which prints it and exits 1
+	err := result(m, nil)
+	if err == nil || !strings.Contains(err.Error(), "alpha.ai") || !strings.Contains(err.Error(), "boom: NOT loaded") {
+		t.Errorf("exit error = %v", err)
+	}
+	if !errors.Is(err, m.exitErr) {
+		t.Error("the error must be wrapped, not replaced")
+	}
+}
+
+// A change that succeeded, or that only asked for a confirmation, leaves nothing to report.
+func TestQuitAfterAScheduleChangeThatSucceededExitsClean(t *testing.T) {
+	for name, msg := range map[string]schedDoneMsg{
+		"success":      {p: pending{kind: "sched"}, res: routine.SchedResult{Before: "a", After: "b"}},
+		"confirmation": {p: pending{kind: "sched"}, err: &routine.ConfirmError{Need: routine.NeedReloadRunning}},
+	} {
+		m := newModel(sample())
+		m.work = &working{kind: "sched", label: "alpha.ai", cancel: func() {}}
+		m.Update(key("ctrl+c"))
+		_, cmd := m.Update(msg)
+		if _, ok := cmd().(tea.QuitMsg); !ok || result(m, nil) != nil {
+			t.Errorf("%s: quit=%v err=%v", name, cmd != nil, result(m, nil))
+		}
+	}
+}
+
+func TestResultPrefersTheProgramsOwnError(t *testing.T) {
+	m := newModel(sample())
+	m.exitErr = errors.New("kept")
+	own := errors.New("program failed")
+	if err := result(m, own); err != own {
+		t.Errorf("err = %v", err)
 	}
 }
 

@@ -95,6 +95,9 @@ type Model struct {
 	// quitAfter: ctrl+c arrived while a schedule change was in flight. Quitting now could leave the
 	// job booted out; rtm quits when the backend (restore included) has finished.
 	quitAfter bool
+	// exitErr is what the backend reported while the quit was held back (NOT loaded, a failed
+	// restore, the backup path ...). The screen is gone by then, so Run hands it to the caller.
+	exitErr error
 }
 
 func New(ctx context.Context, be Backend) *Model {
@@ -387,11 +390,15 @@ func (m *Model) runDone(msg runDoneMsg) (tea.Model, tea.Cmd) {
 func (m *Model) schedDone(msg schedDoneMsg) (tea.Model, tea.Cmd) {
 	m.cancelWork()
 	m.work = nil
+	var ce *routine.ConfirmError
 	if m.quitAfter { // the user asked to quit while this ran; the backend has ended, so quit
+		// A ConfirmError means nothing was changed; any other error is news the user must get.
+		if msg.err != nil && !errors.As(msg.err, &ce) {
+			m.exitErr = fmt.Errorf("%s: the schedule change ended with an error while rtm was quitting: %w", msg.p.r.Label, msg.err)
+		}
 		m.quit = true
 		return m, tea.Quit
 	}
-	var ce *routine.ConfirmError
 	switch {
 	case errors.As(msg.err, &ce):
 		p := msg.p
@@ -630,6 +637,17 @@ func (m *Model) keyLogs(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // Run opens the TUI on the real machine and returns when the user quits.
 func Run(ctx context.Context, env sys.Env) error {
-	_, err := tea.NewProgram(New(ctx, Live{Env: env}), tea.WithAltScreen()).Run()
-	return err
+	return result(tea.NewProgram(New(ctx, Live{Env: env}), tea.WithAltScreen()).Run())
+}
+
+// result is Run's outcome: the program's own error, else an error the final model kept for the
+// caller, so the process can print it and exit non-zero after the screen is gone.
+func result(final tea.Model, err error) error {
+	if err != nil {
+		return err
+	}
+	if m, ok := final.(*Model); ok {
+		return m.exitErr
+	}
+	return nil
 }

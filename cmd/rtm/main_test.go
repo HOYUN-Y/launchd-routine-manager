@@ -90,3 +90,19 @@ func TestUsage(t *testing.T) {
 		t.Fatalf("code=%d", code)
 	}
 }
+
+// An error the TUI hands back (a schedule change that failed while the user was quitting) must
+// reach stderr and make the exit code non-zero; a clean return exits 0.
+func TestLaunchTUIExitCode(t *testing.T) {
+	defer func(old func(context.Context, sys.Env) error) { tuiRun = old }(tuiRun)
+	var errw bytes.Buffer
+	tuiRun = func(context.Context, sys.Env) error { return errors.New("x.y: launchd NOT loaded; backup at /b") }
+	if code := launchTUI(context.Background(), sys.Env{}, &errw); code != 1 || !strings.Contains(errw.String(), "rtm: x.y: launchd NOT loaded; backup at /b") {
+		t.Errorf("code=%d stderr=%q", code, errw.String())
+	}
+	errw.Reset()
+	tuiRun = func(context.Context, sys.Env) error { return nil }
+	if code := launchTUI(context.Background(), sys.Env{}, &errw); code != 0 || errw.Len() != 0 {
+		t.Errorf("code=%d stderr=%q", code, errw.String())
+	}
+}

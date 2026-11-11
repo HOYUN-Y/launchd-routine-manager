@@ -35,6 +35,19 @@ const usage = `usage: rtm [command]
   doctor [--json]                check claude/codex paths, LaunchAgents access, launchctl
 `
 
+// tuiRun is tui.Run; a test replaces it.
+var tuiRun = tui.Run
+
+// launchTUI runs the screen. An error it returns (also one kept from a change that ended while
+// the user was quitting) is printed after the screen is gone, with exit code 1.
+func launchTUI(ctx context.Context, env sys.Env, errw io.Writer) int {
+	if err := tuiRun(ctx, env); err != nil {
+		fmt.Fprintln(errw, "rtm:", err)
+		return 1
+	}
+	return 0
+}
+
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
@@ -56,11 +69,7 @@ func main() {
 func run(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) int {
 	if len(args) == 0 {
 		if f, ok := out.(*os.File); ok && isTerminal(f) {
-			if err := tui.Run(ctx, env); err != nil {
-				fmt.Fprintln(errw, "rtm:", err)
-				return 1
-			}
-			return 0
+			return launchTUI(ctx, env, errw)
 		}
 		fmt.Fprint(errw, usage) // not a terminal (a pipe, a test): nothing to draw on
 		return 2
