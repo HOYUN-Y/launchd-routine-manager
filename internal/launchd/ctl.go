@@ -1,9 +1,15 @@
 package launchd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
@@ -24,6 +30,9 @@ func guard(label string) error {
 	}
 	return nil
 }
+
+// CheckLabel lets callers refuse before doing any preparatory work (a backup, say).
+func CheckLabel(label string) error { return guard(label) }
 
 func domain(uid int) string { return fmt.Sprintf("gui/%d", uid) }
 
@@ -57,4 +66,101 @@ func Bootout(r sys.Runner, uid int, label string) error {
 	}
 	_, err := r.Run("launchctl", "bootout", domain(uid)+"/"+label)
 	return err
+}
+
+// WritePlist replaces the plist at path atomically (temp file in the same directory, then
+// rename), keeping the old file's permissions. This is the only function that writes a
+// LaunchAgent plist.
+func WritePlist(label, path string, data []byte) error {
+	if err := guard(label); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".rtm-tmp")
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, mode); err != nil { // WriteFile is subject to umask
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// Lint runs `plutil -lint` on the file.
+func Lint(r sys.Runner, path string) error {
+	_, err := r.Run("plutil", "-lint", path)
+	return err
+}
+
+// BackupDir is where schedule changes keep the previous plist (PLAN §6).
+func BackupDir(home string) string { return filepath.Join(home, ".local", "state", "rtm", "backups") }
+
+// SaveBackup stores data as <label>-<YYYYMMDD-HHMMSS>.plist (-1, -2... if that name is taken)
+// and returns its path. Plists can hold secrets in EnvironmentVariables, so: dir 0700, file 0600.
+// suffix is "" for a normal backup or e.g. "pre-revert", which Latest does not consider.
+func SaveBackup(home, label, suffix string, now time.Time, data []byte) (string, error) {
+	dir := BackupDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	base := label + "-" + now.Format("20060102-150405")
+	if suffix != "" {
+		base += "-" + suffix
+	}
+	for n := 0; n < 1000; n++ {
+		name := base + ".plist"
+		if n > 0 {
+			name = fmt.Sprintf("%s-%d.plist", base, n)
+		}
+		f, err := os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		return filepath.Join(dir, name), werr
+	}
+	return "", errors.New("too many backups in the same second")
+}
+
+// LatestBackup finds the newest normal backup of label (not pre-revert copies, and not
+// another label that merely starts with this one: a-b-2026... is not a backup of a).
+func LatestBackup(home, label string) (string, error) {
+	dir := BackupDir(home)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("no backup of %s (nothing was changed with rtm schedule)", label)
+	}
+	if err != nil {
+		return "", err
+	}
+	re := regexp.MustCompile(`^` + regexp.QuoteMeta(label) + `-(\d{8}-\d{6})(?:-(\d+))?\.plist$`)
+	best, bestTS, bestN := "", "", -1
+	for _, e := range entries {
+		m := re.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[2]) // "" -> 0
+		if m[1] > bestTS || (m[1] == bestTS && n > bestN) {
+			best, bestTS, bestN = e.Name(), m[1], n
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("no backup of %s (nothing was changed with rtm schedule)", label)
+	}
+	return filepath.Join(dir, best), nil
 }

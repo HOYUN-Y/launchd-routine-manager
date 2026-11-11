@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
 
@@ -81,5 +82,38 @@ func TestQueryOnlyPrints(t *testing.T) {
 		if !strings.HasPrefix(c, "launchctl print ") {
 			t.Errorf("M2 may only run `launchctl print`, ran %q", c)
 		}
+	}
+}
+
+// Formats seen on a real Mac: `event triggers` entries on the calendarinterval stream, and a
+// top-level `run interval`.
+func TestParsePrintLoadedSchedule(t *testing.T) {
+	text := "gui/501/x = {\n\tstate = not running\n\trun interval = 3600 seconds\n\tevent triggers = {\n" +
+		"\t\tx.268435468 => {\n\t\t\tkeepalive = 0\n\t\t\tstream = com.apple.launchd.calendarinterval\n\t\t\tdescriptor = {\n" +
+		"\t\t\t\t\"Hour\" => 3\n\t\t\t\t\"Weekday\" => 4\n\t\t\t}\n\t\t}\n" +
+		"\t\tx.268435467 => {\n\t\t\tstream = com.apple.launchd.calendarinterval\n\t\t\tdescriptor = {\n" +
+		"\t\t\t\t\"Minute\" => 37\n\t\t\t\t\"Hour\" => 19\n\t\t\t}\n\t\t}\n" +
+		"\t\tother => {\n\t\t\tstream = com.apple.fsevents.matching\n\t\t\tdescriptor = {\n\t\t\t\t\"Hour\" => 99\n\t\t\t}\n\t\t}\n" +
+		"\t}\n}\n"
+	st := ParsePrint(text)
+	if st.RunInterval != 3600 {
+		t.Errorf("interval = %d", st.RunInterval)
+	}
+	if len(st.Calendars) != 2 {
+		t.Fatalf("calendars = %+v (a descriptor on another stream must not count)", st.Calendars)
+	}
+	want := []schedule.Calendar{{Hour: i(3), Weekday: i(4)}, {Hour: i(19), Minute: i(37)}}
+	if !schedule.SameCalendars(st.Calendars, want) {
+		t.Errorf("calendars = %+v", st.Calendars)
+	}
+}
+
+// The real captures: hermes has no schedule at all; the atlas capture is a StartInterval job.
+func TestParsePrintLoadedScheduleInRealSamples(t *testing.T) {
+	if st := ParsePrint(sample(t, "running.txt")); len(st.Calendars) != 0 || st.RunInterval != 0 {
+		t.Errorf("running.txt: %+v", st)
+	}
+	if st := ParsePrint(sample(t, "exited.txt")); len(st.Calendars) != 0 || st.RunInterval != 3600 {
+		t.Errorf("exited.txt: calendars=%v interval=%d, want none and 3600", st.Calendars, st.RunInterval)
 	}
 }

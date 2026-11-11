@@ -2,8 +2,11 @@ package launchd
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
@@ -63,5 +66,100 @@ func TestGuardIsOffByDefault(t *testing.T) {
 	fr := &sys.FakeRunner{Results: map[string]sys.Result{"launchctl kickstart gui/501/ai.hermes.gateway": {}}}
 	if err := Kickstart(fr, 501, "ai.hermes.gateway", false); err != nil {
 		t.Errorf("the product must be able to run any label: %v", err)
+	}
+}
+
+func TestWritePlistIsAtomicAndKeepsMode(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "dev.rtm.test.a.plist")
+	os.WriteFile(p, []byte("old"), 0o600)
+	if err := WritePlist("dev.rtm.test.a", p, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "new" {
+		t.Errorf("content = %q", b)
+	}
+	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, the old file's mode must be kept", fi.Mode().Perm())
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".*")); len(left) != 0 {
+		t.Errorf("temp file left behind: %v", left)
+	}
+}
+
+func TestWritePlistGuard(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "ai.hermes.gateway.plist")
+	os.WriteFile(p, []byte("keep"), 0o644)
+	t.Setenv(GuardEnv, "1")
+	if err := WritePlist("ai.hermes.gateway", p, []byte("clobber")); err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "keep" {
+		t.Errorf("a refused write must not touch the file: %q", b)
+	}
+	if err := WritePlist("dev.rtm.test.ok", p, []byte("fine")); err != nil {
+		t.Errorf("test labels must pass: %v", err)
+	}
+}
+
+func TestLint(t *testing.T) {
+	fr := &sys.FakeRunner{Results: map[string]sys.Result{
+		"plutil -lint /p/a.plist": {},
+		"plutil -lint /p/b.plist": {Err: errors.New("bad")},
+	}}
+	if Lint(fr, "/p/a.plist") != nil || Lint(fr, "/p/b.plist") == nil {
+		t.Error("Lint must pass the runner's verdict through")
+	}
+}
+
+func TestBackups(t *testing.T) {
+	home := t.TempDir()
+	at := time.Date(2026, 11, 12, 2, 55, 30, 0, time.UTC)
+	p1, err := SaveBackup(home, "dev.rtm.test.a", "", at, []byte("one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(p1) != "dev.rtm.test.a-20261112-025530.plist" {
+		t.Errorf("name = %s", filepath.Base(p1))
+	}
+	if fi, _ := os.Stat(p1); fi.Mode().Perm() != 0o600 {
+		t.Errorf("backup mode = %v (plists can hold secrets)", fi.Mode().Perm())
+	}
+	if fi, _ := os.Stat(BackupDir(home)); fi.Mode().Perm() != 0o700 {
+		t.Errorf("backup dir mode = %v", fi.Mode().Perm())
+	}
+	p2, _ := SaveBackup(home, "dev.rtm.test.a", "", at, []byte("two")) // same second
+	p3, _ := SaveBackup(home, "dev.rtm.test.a", "", at, []byte("three"))
+	if filepath.Base(p2) != "dev.rtm.test.a-20261112-025530-1.plist" || filepath.Base(p3) != "dev.rtm.test.a-20261112-025530-2.plist" {
+		t.Errorf("collisions: %s %s", filepath.Base(p2), filepath.Base(p3))
+	}
+	if b, _ := os.ReadFile(p1); string(b) != "one" {
+		t.Error("an existing backup must never be overwritten")
+	}
+
+	// the newest wins: later second beats suffix, higher suffix beats lower
+	if got, _ := LatestBackup(home, "dev.rtm.test.a"); got != p3 {
+		t.Errorf("latest = %s, want %s", got, p3)
+	}
+	later, _ := SaveBackup(home, "dev.rtm.test.a", "", at.Add(time.Second), []byte("later"))
+	if got, _ := LatestBackup(home, "dev.rtm.test.a"); got != later {
+		t.Errorf("latest = %s, want %s", got, later)
+	}
+
+	// not confused by pre-revert copies or by labels that share a prefix
+	SaveBackup(home, "dev.rtm.test.a", "pre-revert", at.Add(time.Hour), []byte("x"))
+	SaveBackup(home, "dev.rtm.test.a-b", "", at.Add(2*time.Hour), []byte("x"))
+	SaveBackup(home, "dev.rtm.test.ab", "", at.Add(3*time.Hour), []byte("x"))
+	if got, _ := LatestBackup(home, "dev.rtm.test.a"); got != later {
+		t.Errorf("latest = %s, want %s (pre-revert copies and other labels do not count)", got, later)
+	}
+	if got, _ := LatestBackup(home, "dev.rtm.test.a-b"); !strings.Contains(got, "a-b-") {
+		t.Errorf("a-b latest = %s", got)
+	}
+	if _, err := LatestBackup(home, "dev.rtm.test.none"); err == nil || !strings.Contains(err.Error(), "no backup") {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := LatestBackup(t.TempDir(), "x"); err == nil {
+		t.Error("no backup directory at all must be an error, not a crash")
 	}
 }

@@ -60,11 +60,23 @@ func Scan(dir string) (plists []Plist, warnings []string) {
 	return plists, warnings
 }
 
+// Read parses one plist file.
+func Read(path string) (Plist, error) {
+	return read(path)
+}
+
 func read(path string) (Plist, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Plist{}, err
 	}
+	p, err := Parse(data)
+	p.Path = path
+	return p, err
+}
+
+// Parse reads plist bytes (XML or binary).
+func Parse(data []byte) (Plist, error) {
 	var r raw
 	if _, err := plist.Unmarshal(data, &r); err != nil {
 		return Plist{}, err
@@ -84,7 +96,7 @@ func read(path string) (Plist, error) {
 		keepAlive = true // conditional KeepAlive still means "launchd keeps it up"
 	}
 	return Plist{
-		Label: r.Label, Path: path, Args: args,
+		Label: r.Label, Args: args,
 		Schedule: schedule.Spec{
 			Calendars: schedule.ParseCalendars(r.StartCalendarInterval),
 			Interval:  r.StartInterval, RunAtLoad: r.RunAtLoad, KeepAlive: keepAlive,
