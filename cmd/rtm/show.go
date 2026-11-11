@@ -41,7 +41,12 @@ func cmdShow(args []string, out, errw io.Writer, env sys.Env) error {
 		return writeJSON(out, r)
 	}
 
-	row := func(k, v string) { fmt.Fprintf(out, "%-11s %s\n", k+":", v) }
+	row := func(k, v string) {
+		if k != "" { // continuation lines (evidence) have no key and no colon
+			k += ":"
+		}
+		fmt.Fprintf(out, "%-11s %s\n", k, v)
+	}
 	when := func(t *time.Time) string {
 		if t == nil {
 			return "-"
@@ -66,7 +71,11 @@ func cmdShow(args []string, out, errw io.Writer, env sys.Env) error {
 		row("", "- "+e.String())
 	}
 	row("schedule", r.Schedule)
-	row("next run", when(r.NextRun))
+	next := when(r.NextRun)
+	if r.NextRunEstimated {
+		next += " (estimated)"
+	}
+	row("next run", next)
 	if st := r.Status; st == nil {
 		row("state", "n/a (crontab keeps no state)")
 	} else if !st.Loaded {
@@ -84,7 +93,11 @@ func cmdShow(args []string, out, errw io.Writer, env sys.Env) error {
 		}
 		row("last exit", exit)
 	}
-	row("last run", when(r.LastRun)+" (estimated from log mtime)")
+	last := when(r.LastRun)
+	if r.LastRun != nil {
+		last += " (estimated from log mtime)"
+	}
+	row("last run", last)
 	if r.StdoutPath == "" && r.StderrPath == "" {
 		row("logs", "none configured")
 	} else {

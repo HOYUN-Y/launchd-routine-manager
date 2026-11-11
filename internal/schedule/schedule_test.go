@@ -3,6 +3,7 @@ package schedule
 import (
 	"testing"
 	"time"
+	_ "time/tzdata" // the DST test must not depend on the host having zoneinfo
 )
 
 func i(n int) *int { return &n }
@@ -44,12 +45,16 @@ func TestNextCalendar(t *testing.T) {
 		{"day 30 across February", Spec{Calendars: []Calendar{{Day: i(30), Hour: i(6), Minute: i(0)}}}, at(2027, 1, 30, 7, 0), at(2027, 3, 30, 6, 0)},
 		{"Feb 29 waits for a leap year", Spec{Calendars: []Calendar{{Month: i(2), Day: i(29), Hour: i(0), Minute: i(0)}}}, now, at(2028, 2, 29, 0, 0)},
 		{"year boundary", Spec{Calendars: []Calendar{{Hour: i(0), Minute: i(0)}}}, at(2026, 12, 31, 23, 59), at(2027, 1, 1, 0, 0)},
-		{"day AND weekday must both match", Spec{Calendars: []Calendar{{Day: i(13), Weekday: i(1), Hour: i(9), Minute: i(0)}}}, now, at(2027, 9, 13, 9, 0)}, // first Monday-the-13th after Nov 2026
-		{"day AND weekday: Friday the 13th is tomorrow", Spec{Calendars: []Calendar{{Day: i(13), Weekday: i(5), Hour: i(9), Minute: i(0)}}}, now, at(2026, 11, 13, 9, 0)},
+		// Day and Weekday together: "started if either one matches" (man 5 launchd.plist)
+		{"day OR weekday: day 13 matches tomorrow though Monday is later", Spec{Calendars: []Calendar{{Day: i(13), Weekday: i(1), Hour: i(9), Minute: i(0)}}}, at(2026, 11, 12, 10, 30), at(2026, 11, 13, 9, 0)},
+		{"day OR weekday: Sunday comes before the next 13th", Spec{Calendars: []Calendar{{Day: i(13), Weekday: i(0), Hour: i(9), Minute: i(0)}}}, at(2026, 11, 13, 10, 0), at(2026, 11, 15, 9, 0)},
+		{"day OR weekday: Saturday before the 20th", Spec{Calendars: []Calendar{{Day: i(20), Weekday: i(6), Hour: i(9), Minute: i(0)}}}, now, at(2026, 11, 14, 9, 0)},
+		{"day OR weekday: both match the same day", Spec{Calendars: []Calendar{{Day: i(13), Weekday: i(5), Hour: i(9), Minute: i(0)}}}, now, at(2026, 11, 13, 9, 0)},
+		{"month still restricts day OR weekday", Spec{Calendars: []Calendar{{Month: i(12), Day: i(13), Weekday: i(1), Hour: i(9), Minute: i(0)}}}, now, at(2026, 12, 7, 9, 0)}, // first Monday of Dec
 	}
 	for _, c := range cases {
-		got, ok := c.spec.Next(c.now, time.Time{})
-		if !ok || !got.Equal(c.want) {
+		got, est, ok := c.spec.Next(c.now, time.Time{})
+		if !ok || est || !got.Equal(c.want) {
 			t.Errorf("%s: got %v (ok=%v), want %v", c.name, got, ok, c.want)
 		}
 	}
@@ -65,7 +70,7 @@ func TestNextNever(t *testing.T) {
 		"hour 25":        {Calendars: []Calendar{{Hour: i(25), Minute: i(0)}}},
 		"Feb 30":         {Calendars: []Calendar{{Month: i(2), Day: i(30)}}},
 	} {
-		if got, ok := s.Next(now, time.Time{}); ok {
+		if got, _, ok := s.Next(now, time.Time{}); ok {
 			t.Errorf("%s: got %v, want none", name, got)
 		}
 	}
@@ -73,21 +78,21 @@ func TestNextNever(t *testing.T) {
 
 func TestNextInterval(t *testing.T) {
 	s := Spec{Interval: 3600}
-	if _, ok := s.Next(now, time.Time{}); ok {
+	if _, _, ok := s.Next(now, time.Time{}); ok {
 		t.Error("interval without a known last run has no next time")
 	}
-	if got, _ := s.Next(now, at(2026, 11, 12, 10, 0)); !got.Equal(at(2026, 11, 12, 11, 0)) {
-		t.Errorf("last+interval: got %v", got)
+	if got, est, _ := s.Next(now, at(2026, 11, 12, 10, 0)); !got.Equal(at(2026, 11, 12, 11, 0)) || !est {
+		t.Errorf("last+interval: got %v estimated=%v, want an estimate", got, est)
 	}
-	if got, ok := s.Next(now, at(2026, 11, 12, 8, 0)); ok {
+	if got, _, ok := s.Next(now, at(2026, 11, 12, 8, 0)); ok {
 		t.Errorf("stale last run means unknown, got %v", got)
 	}
 }
 
 func TestNextMixedPicksEarliest(t *testing.T) {
 	s := Spec{Calendars: []Calendar{{Hour: i(18), Minute: i(0)}}, Interval: 1800}
-	if got, _ := s.Next(now, at(2026, 11, 12, 10, 15)); !got.Equal(at(2026, 11, 12, 10, 45)) {
-		t.Errorf("got %v", got)
+	if got, est, _ := s.Next(now, at(2026, 11, 12, 10, 15)); !got.Equal(at(2026, 11, 12, 10, 45)) || !est {
+		t.Errorf("got %v estimated=%v", got, est)
 	}
 }
 
@@ -97,7 +102,7 @@ func TestNextKeepsLocation(t *testing.T) {
 		t.Skip("no tzdata")
 	}
 	n := time.Date(2026, 11, 12, 23, 0, 0, 0, seoul)
-	got, _ := Spec{Calendars: []Calendar{{Hour: i(9), Minute: i(0)}}}.Next(n, time.Time{})
+	got, _, _ := Spec{Calendars: []Calendar{{Hour: i(9), Minute: i(0)}}}.Next(n, time.Time{})
 	if want := time.Date(2026, 11, 13, 9, 0, 0, 0, seoul); !got.Equal(want) {
 		t.Errorf("got %v want %v", got, want)
 	}
@@ -159,5 +164,69 @@ func TestRelative(t *testing.T) {
 		if got := Relative(c.t, now); got != c.want {
 			t.Errorf("got %q want %q", got, c.want)
 		}
+	}
+}
+
+func TestEstimatedOnlyForInterval(t *testing.T) {
+	cal := Spec{Calendars: []Calendar{{Hour: i(18), Minute: i(0)}}}
+	if _, est, ok := cal.Next(now, time.Time{}); !ok || est {
+		t.Errorf("calendar time is exact: est=%v ok=%v", est, ok)
+	}
+	iv := Spec{Interval: 3600}
+	if _, est, ok := iv.Next(now, at(2026, 11, 12, 10, 0)); !ok || !est {
+		t.Errorf("interval is an estimate: est=%v ok=%v", est, ok)
+	}
+	// a calendar time wins a tie, so the result is exact
+	tie := Spec{Calendars: []Calendar{{Hour: i(11), Minute: i(0)}}, Interval: 3600}
+	if got, est, _ := tie.Next(now, at(2026, 11, 12, 10, 0)); est || !got.Equal(at(2026, 11, 12, 11, 0)) {
+		t.Errorf("tie: got %v est=%v", got, est)
+	}
+	// the interval is earlier than the calendar time: estimate
+	if _, est, _ := (Spec{Calendars: []Calendar{{Hour: i(23), Minute: i(0)}}, Interval: 600}).Next(now, at(2026, 11, 12, 10, 25)); !est {
+		t.Error("an earlier interval estimate must be flagged")
+	}
+}
+
+// DST: wall-clock times that do not exist must be skipped, never moved to another time.
+func TestNextAcrossDST(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := func(y int, m time.Month, d, h, min int) time.Time { return time.Date(y, m, d, h, min, 0, 0, ny) }
+	// 2027-03-14: clocks jump from 02:00 EST straight to 03:00 EDT, so 02:00-02:59 never happens.
+	cases := []struct {
+		name string
+		spec Spec
+		now  time.Time
+		want time.Time
+	}{
+		{"02:30 does not exist on the 14th: skip to the 15th",
+			Spec{Calendars: []Calendar{{Hour: i(2), Minute: i(30)}}}, loc(2027, 3, 13, 12, 0), loc(2027, 3, 15, 2, 30)},
+		{"just before the gap: still no earlier normalised time",
+			Spec{Calendars: []Calendar{{Hour: i(2), Minute: i(30)}}}, loc(2027, 3, 14, 0, 30), loc(2027, 3, 15, 2, 30)},
+		{"hourly :30 skips the missing 02:30 and lands on 03:30 EDT",
+			Spec{Calendars: []Calendar{{Minute: i(30)}}}, loc(2027, 3, 14, 1, 45), loc(2027, 3, 14, 3, 30)},
+		{"03:00 exists",
+			Spec{Calendars: []Calendar{{Hour: i(3), Minute: i(0)}}}, loc(2027, 3, 14, 1, 0), loc(2027, 3, 14, 3, 0)},
+		{"01:59 exists, the minute before the jump",
+			Spec{Calendars: []Calendar{{Hour: i(1), Minute: i(59)}}}, loc(2027, 3, 14, 0, 0), loc(2027, 3, 14, 1, 59)},
+		{"a weekday schedule whose time is missing waits for the next matching day",
+			Spec{Calendars: []Calendar{{Weekday: i(0), Hour: i(2), Minute: i(30)}}}, loc(2027, 3, 10, 0, 0), loc(2027, 3, 21, 2, 30)}, // Sunday the 14th is skipped
+	}
+	for _, c := range cases {
+		got, _, ok := c.spec.Next(c.now, time.Time{})
+		if !ok || !got.Equal(c.want) {
+			t.Errorf("%s: got %v (ok=%v), want %v", c.name, got, ok, c.want)
+		}
+		if ok && !got.After(c.now) {
+			t.Errorf("%s: result %v is not after now %v", c.name, got, c.now)
+		}
+	}
+
+	// Autumn: 2027-11-07 01:30 happens twice. Either is acceptable, but it must be 01:30 and soon.
+	got, _, ok := Spec{Calendars: []Calendar{{Hour: i(1), Minute: i(30)}}}.Next(loc(2027, 11, 7, 0, 0), time.Time{})
+	if !ok || got.Hour() != 1 || got.Minute() != 30 || got.Sub(loc(2027, 11, 7, 0, 0)) > 3*time.Hour {
+		t.Errorf("autumn: got %v", got)
 	}
 }

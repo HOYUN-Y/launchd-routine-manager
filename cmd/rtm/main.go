@@ -150,6 +150,9 @@ func cmdList(args []string, out, errw io.Writer, env sys.Env) error {
 		next := "-"
 		if r.NextRun != nil {
 			next = schedule.Relative(*r.NextRun, now)
+			if r.NextRunEstimated {
+				next += " (estimated)"
+			}
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Label, r.Source, class, r.Schedule, r.StateText(), next, evidence)
 	}

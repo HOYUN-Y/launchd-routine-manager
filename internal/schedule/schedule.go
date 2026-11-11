@@ -134,32 +134,24 @@ func (s Spec) Describe() string {
 // horizonDays bounds the search; it covers a Feb 29 schedule across a leap-year gap.
 const horizonDays = 366*4 + 1
 
-// Next returns the earliest start strictly after now. lastRun (estimated from the log mtime,
-// zero if unknown) is only used for StartInterval, which launchd counts from the previous
-// start; a stale lastRun gives ok=false. RunAtLoad/KeepAlive alone have no next time either.
-// shortcut: when both Day and Weekday are set they must both match (AND); verify against
-// launchd before M4 edits such schedules.
-func (s Spec) Next(now, lastRun time.Time) (time.Time, bool) {
-	var best time.Time
-	found := false
-	consider := func(t time.Time) {
-		if !found || t.Before(best) {
-			best, found = t, true
-		}
-	}
+// Next returns the earliest start strictly after now. estimated is true when that time is a
+// guess: StartInterval counts from launchd's previous start, which we only know from the log
+// mtime (lastRun, zero if unknown). A stale lastRun gives ok=false. RunAtLoad/KeepAlive alone
+// have no next time either. A calendar time wins a tie, because it is exact.
+func (s Spec) Next(now, lastRun time.Time) (t time.Time, estimated, ok bool) {
 	for _, c := range s.Calendars {
-		if t, ok := c.next(now); ok {
-			consider(t)
+		if ct, found := c.next(now); found && (!ok || ct.Before(t)) {
+			t, ok = ct, true
 		}
 	}
 	if s.Interval > 0 && !lastRun.IsZero() {
 		// If last+interval is already past, the log mtime is not the real last start (the job
 		// may run without writing logs), so the estimate is worthless: report "unknown".
-		if t := lastRun.Add(time.Duration(s.Interval) * time.Second); t.After(now) {
-			consider(t)
+		if it := lastRun.Add(time.Duration(s.Interval) * time.Second); it.After(now) && (!ok || it.Before(t)) {
+			t, estimated, ok = it, true, true
 		}
 	}
-	return best, found
+	return t, estimated, ok
 }
 
 func (c Calendar) next(now time.Time) (time.Time, bool) {
@@ -178,7 +170,14 @@ func (c Calendar) next(now time.Time) (time.Time, bool) {
 				if c.Minute != nil && *c.Minute != m {
 					continue
 				}
-				if t := time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, loc); t.After(now) {
+				t := time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, loc)
+				// shortcut: a wall-clock time skipped by a DST jump (02:30 on spring-forward day)
+				// is skipped, not moved. launchd's real behaviour is unverified; measure it and
+				// fix here if it differs. For the repeated hour in autumn, Go picks one of the two.
+				if t.Year() != day.Year() || t.Month() != day.Month() || t.Day() != day.Day() || t.Hour() != h || t.Minute() != m {
+					continue
+				}
+				if t.After(now) {
 					return t, true
 				}
 			}
@@ -187,10 +186,23 @@ func (c Calendar) next(now time.Time) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// dayMatches: Month must match; Day and Weekday are alternatives when both are given
+// ("started if either one matches the current date", man 5 launchd.plist).
 func (c Calendar) dayMatches(day time.Time) bool {
-	return (c.Month == nil || *c.Month == int(day.Month())) &&
-		(c.Day == nil || *c.Day == day.Day()) &&
-		(c.Weekday == nil || (*c.Weekday >= 0 && *c.Weekday <= 7 && *c.Weekday%7 == int(day.Weekday()))) // 7 == 0 == Sunday
+	if c.Month != nil && *c.Month != int(day.Month()) {
+		return false
+	}
+	dayOK := c.Day != nil && *c.Day == day.Day()
+	wdOK := c.Weekday != nil && *c.Weekday >= 0 && *c.Weekday <= 7 && *c.Weekday%7 == int(day.Weekday()) // 7 == 0 == Sunday
+	switch {
+	case c.Day != nil && c.Weekday != nil:
+		return dayOK || wdOK
+	case c.Day != nil:
+		return dayOK
+	case c.Weekday != nil:
+		return wdOK
+	}
+	return true
 }
 
 // Relative formats t for humans: "14:00", "tomorrow 09:00", or "2026-11-20 09:00".

@@ -37,12 +37,13 @@ func cmdLogs(ctx context.Context, args []string, out, errw io.Writer, env sys.En
 	if len(paths) == 0 {
 		return fmt.Errorf("%s has no log path (no StandardOutPath/StandardErrorPath)", r.Label)
 	}
-	offsets := make([]int64, len(paths))
+	files := make([]followed, len(paths))
 	for i, p := range paths {
+		files[i].path = p
 		if len(paths) > 1 {
 			fmt.Fprintf(out, "==> %s <==\n", p)
 		}
-		lines, size, err := tail(p, *n)
+		lines, fi, err := tail(p, *n)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			fmt.Fprintf(out, "(log file does not exist yet: %s)\n", p)
@@ -52,51 +53,61 @@ func cmdLogs(ctx context.Context, args []string, out, errw io.Writer, env sys.En
 			for _, l := range lines {
 				fmt.Fprintln(out, l)
 			}
-			offsets[i] = size
+			files[i].info, files[i].offset = fi, fi.Size()
 		}
 	}
 	if *follow {
-		followFiles(ctx, out, paths, offsets)
+		followFiles(ctx, out, files)
 	}
 	return nil
 }
 
-// tail returns the last n lines and the file size it read up to, reading from the end so a
-// huge log is not loaded whole.
-func tail(path string, n int) (lines []string, size int64, err error) {
+// tail returns the last n lines and the file's info as it was when read (Size() is how far
+// it read), reading from the end so a huge log is not loaded whole.
+func tail(path string, n int) (lines []string, fi os.FileInfo, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	defer f.Close()
-	fi, err := f.Stat()
+	fi, err = f.Stat()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
-	size = fi.Size()
+	size := fi.Size()
 	if size == 0 || n == 0 {
-		return nil, size, nil
+		return nil, fi, nil
 	}
 	for chunk := int64(64 << 10); ; chunk *= 2 {
 		start := max(0, size-chunk)
 		buf := make([]byte, size-start)
 		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
-			return nil, 0, err
+			return nil, nil, err
 		}
 		if start > 0 && bytes.Count(buf, []byte("\n")) <= n {
 			continue // not enough complete lines yet
 		}
-		lines = strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+		// Only the final newline ends the last line; blank lines before it are real lines.
+		lines = strings.Split(strings.TrimSuffix(string(buf), "\n"), "\n")
 		if start > 0 {
 			lines = lines[1:] // first line is cut in the middle
 		}
-		return lines[max(0, len(lines)-n):], size, nil
+		return lines[max(0, len(lines)-n):], fi, nil
 	}
 }
 
-// followFiles prints whatever is appended to the files until ctx ends. A file that shrinks
-// (rotated or truncated) is re-read from the start.
-func followFiles(ctx context.Context, out io.Writer, paths []string, offsets []int64) {
+// followed is one log file being followed: where we are in it, and which file it was.
+type followed struct {
+	path   string
+	offset int64
+	info   os.FileInfo // nil until the file has been seen
+}
+
+// followFiles prints whatever is appended to the files until ctx ends. A file that was
+// replaced (log rotation: rename + new file, so os.SameFile is false) or that shrank
+// (truncated) is read again from the start; comparing sizes alone misses a replacement whose
+// new file is already longer than the old offset.
+func followFiles(ctx context.Context, out io.Writer, files []followed) {
 	t := time.NewTicker(followEvery)
 	defer t.Stop()
 	lastShown := -1
@@ -106,29 +117,31 @@ func followFiles(ctx context.Context, out io.Writer, paths []string, offsets []i
 			return
 		case <-t.C:
 		}
-		for i, p := range paths {
-			fi, err := os.Stat(p)
+		for i := range files {
+			f := &files[i]
+			cur, err := os.Stat(f.path)
 			if err != nil {
 				continue
 			}
-			if fi.Size() < offsets[i] {
-				offsets[i] = 0
+			if (f.info != nil && !os.SameFile(f.info, cur)) || cur.Size() < f.offset {
+				f.offset = 0
 			}
-			if fi.Size() == offsets[i] {
+			f.info = cur
+			if cur.Size() == f.offset {
 				continue
 			}
-			f, err := os.Open(p)
+			fh, err := os.Open(f.path)
 			if err != nil {
 				continue
 			}
-			data, _ := io.ReadAll(io.NewSectionReader(f, offsets[i], fi.Size()-offsets[i]))
-			f.Close()
-			if len(paths) > 1 && lastShown != i {
-				fmt.Fprintf(out, "==> %s <==\n", p)
+			data, _ := io.ReadAll(io.NewSectionReader(fh, f.offset, cur.Size()-f.offset))
+			fh.Close()
+			if len(files) > 1 && lastShown != i {
+				fmt.Fprintf(out, "==> %s <==\n", f.path)
 				lastShown = i
 			}
 			out.Write(data)
-			offsets[i] += int64(len(data))
+			f.offset += int64(len(data))
 		}
 	}
 }

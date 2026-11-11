@@ -68,7 +68,7 @@ func TestShowText(t *testing.T) {
 	}
 	for _, want := range []string{
 		"label:      dev.rtm.test.claude-direct",
-		"class:      AI", "- direct: /opt/homebrew/bin/claude",
+		"class:      AI\n            - direct: /opt/homebrew/bin/claude\n", // evidence line: indented, no stray colon
 		"schedule:   daily 09:00", "next run:   2026-11-13 09:00:00",
 		"state:      running (pid 4859)", "runs:       1", "last exit:  never exited",
 		"command:    /opt/homebrew/bin/claude -p /changelog-update",
@@ -226,9 +226,9 @@ func TestTail(t *testing.T) {
 	check := func(content string, n int, want string, wantSize int) {
 		t.Helper()
 		os.WriteFile(p, []byte(content), 0o644)
-		lines, size, err := tail(p, n)
-		if err != nil || strings.Join(lines, "|") != want || size != int64(wantSize) {
-			t.Errorf("tail(%q,%d) = %q size=%d err=%v, want %q size=%d", content, n, lines, size, err, want, wantSize)
+		lines, fi, err := tail(p, n)
+		if err != nil || strings.Join(lines, "|") != want || fi.Size() != int64(wantSize) {
+			t.Errorf("tail(%q,%d) = %q err=%v, want %q size=%d", content, n, lines, err, want, wantSize)
 		}
 	}
 	check("", 5, "", 0)
@@ -236,6 +236,11 @@ func TestTail(t *testing.T) {
 	check("a\nb\nc", 2, "b|c", 5) // no trailing newline
 	check("a\nb\n", 10, "a|b", 4) // fewer lines than n
 	check("a\nb\n", 0, "", 4)
+	// only the last newline ends the last line; blank lines before it are lines (P2 from review)
+	check("a\n\n\n", 3, "a||", 4)
+	check("a\n\n\n", 2, "|", 4)
+	check("\n", 1, "", 1)
+	check("a\n\n", 1, "", 3)
 
 	big := numbered(20000) // ~190KB: needs more than one 64KB chunk
 	os.WriteFile(p, []byte(big), 0o644)
@@ -349,5 +354,110 @@ func TestTrackBracketLabelEndToEnd(t *testing.T) {
 	_, out, _ := exec(t, env, "list", "--json")
 	if !strings.Contains(out, `"dev.rtm.test.a]b"`) || !strings.Contains(out, `"dev.rtm.test.b"`) {
 		t.Errorf("both labels must be tracked:\n%s", out)
+	}
+}
+
+// Log rotation: the old file is renamed away and a NEW file takes its place. If the new file is
+// already longer than our offset, comparing sizes alone would skip its beginning.
+func TestLogsFollowSeesReplacedFile(t *testing.T) {
+	followEvery = 10 * time.Millisecond
+	defer func() { followEvery = 500 * time.Millisecond }()
+	env := m2Env(t)
+	dir := t.TempDir()
+	logf := filepath.Join(dir, "f.log")
+	os.WriteFile(logf, []byte("old1\nold2\n"), 0o644) // 10 bytes
+	writePlist(t, env, "dev.rtm.test.rotate", "<key>StandardOutPath</key><string>"+logf+"</string>")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := &lockedBuf{}
+	done := make(chan int)
+	go func() { done <- run(ctx, []string{"logs", "dev.rtm.test.rotate", "-f"}, out, &bytes.Buffer{}, env) }()
+	wait := func(s string) {
+		for i := 0; i < 300; i++ {
+			if strings.Contains(out.String(), s) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %q, got %q", s, out.String())
+	}
+	wait("old2")
+
+	os.Rename(logf, logf+".1") // rotate
+	os.WriteFile(logf, []byte("new-line-1\nnew-line-2\nnew-line-3\n"), 0o644)
+	wait("new-line-1") // lost before the fix: the new file is 33 bytes > the old offset of 10
+	wait("new-line-3")
+	cancel()
+	<-done
+	if got := strings.Count(out.String(), "new-line-1"); got != 1 {
+		t.Errorf("new-line-1 printed %d times: %q", got, out.String())
+	}
+}
+
+func TestLogsFollowFileAppearsLater(t *testing.T) {
+	followEvery = 10 * time.Millisecond
+	defer func() { followEvery = 500 * time.Millisecond }()
+	env := m2Env(t)
+	logf := filepath.Join(t.TempDir(), "later.log")
+	writePlist(t, env, "dev.rtm.test.later", "<key>StandardOutPath</key><string>"+logf+"</string>")
+	ctx, cancel := context.WithCancel(context.Background())
+	out := &lockedBuf{}
+	done := make(chan int)
+	go func() { done <- run(ctx, []string{"logs", "dev.rtm.test.later", "-f"}, out, &bytes.Buffer{}, env) }()
+	time.Sleep(50 * time.Millisecond)
+	os.WriteFile(logf, []byte("first-line\n"), 0o644)
+	for i := 0; i < 300 && !strings.Contains(out.String(), "first-line"); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if !strings.Contains(out.String(), "does not exist yet") || !strings.Contains(out.String(), "first-line") {
+		t.Errorf("out = %q", out.String())
+	}
+}
+
+func TestLogsKeepsTrailingBlankLines(t *testing.T) {
+	env := m2Env(t)
+	logf := filepath.Join(t.TempDir(), "b.log")
+	os.WriteFile(logf, []byte("a\nb\n\n\n"), 0o644)
+	writePlist(t, env, "dev.rtm.test.blank", "<key>StandardOutPath</key><string>"+logf+"</string>")
+	if _, out, _ := exec(t, env, "logs", "dev.rtm.test.blank", "-n", "3"); out != "b\n\n\n" {
+		t.Errorf("out = %q, want the two blank lines kept", out)
+	}
+}
+
+// StartInterval's next run is a guess from the log mtime: say so, in text and in JSON.
+func TestEstimatedNextRunIsLabelled(t *testing.T) {
+	env := m2Env(t, "dev.rtm.test.claude-direct")
+	logf := filepath.Join(t.TempDir(), "i.log")
+	os.WriteFile(logf, []byte("x\n"), 0o644)
+	mt := pinned.Add(-30 * time.Minute)
+	os.Chtimes(logf, mt, mt)
+	writePlist(t, env, "dev.rtm.test.interval", "<key>StartInterval</key><integer>3600</integer><key>StandardOutPath</key><string>"+logf+"</string>")
+
+	_, out, _ := exec(t, env, "show", "dev.rtm.test.interval")
+	if !strings.Contains(out, "next run:   2026-11-12 11:00:00 (estimated)") {
+		t.Errorf("show:\n%s", out)
+	}
+	_, out, _ = exec(t, env, "show", "dev.rtm.test.interval", "--json")
+	if !strings.Contains(out, `"next_run_estimated": true`) {
+		t.Errorf("json:\n%s", out)
+	}
+	_, out, _ = exec(t, env, "list", "--all")
+	if !strings.Contains(out, "11:00 (estimated)") {
+		t.Errorf("list:\n%s", out)
+	}
+
+	// a calendar schedule is exact: no label, no JSON flag
+	_, out, _ = exec(t, env, "show", "dev.rtm.test.claude-direct")
+	if !strings.Contains(out, "next run:   2026-11-13 09:00:00\n") {
+		t.Errorf("exact time must not be labelled:\n%s", out)
+	}
+	if !strings.Contains(out, "last run:   -\n") {
+		t.Errorf("no log, no last run, no explanation:\n%s", out)
+	}
+	_, out, _ = exec(t, env, "show", "dev.rtm.test.claude-direct", "--json")
+	if strings.Contains(out, "next_run_estimated") {
+		t.Errorf("json:\n%s", out)
 	}
 }

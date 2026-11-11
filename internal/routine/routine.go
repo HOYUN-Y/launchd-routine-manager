@@ -45,11 +45,13 @@ type Routine struct {
 	Evidence []classify.Evidence `json:"evidence"`
 
 	// Filled by Enrich (plist routines only; crontab has no state).
-	Status     *launchd.Status `json:"status,omitempty"`
-	NextRun    *time.Time      `json:"next_run,omitempty"`
-	LastRun    *time.Time      `json:"last_run,omitempty"` // estimated from the log files' mtime
-	StdoutPath string          `json:"stdout_path,omitempty"`
-	StderrPath string          `json:"stderr_path,omitempty"`
+	Status  *launchd.Status `json:"status,omitempty"`
+	NextRun *time.Time      `json:"next_run,omitempty"`
+	// NextRunEstimated: next_run is a guess (StartInterval counted from the log mtime).
+	NextRunEstimated bool       `json:"next_run_estimated,omitempty"`
+	LastRun          *time.Time `json:"last_run,omitempty"` // estimated from the log files' mtime
+	StdoutPath       string     `json:"stdout_path,omitempty"`
+	StderrPath       string     `json:"stderr_path,omitempty"`
 
 	spec schedule.Spec
 }
@@ -129,17 +131,18 @@ func Enrich(env sys.Env, r *Routine) {
 	if r.StderrPath == "" {
 		r.StderrPath = st.StderrPath
 	}
+	now := env.Clock()
 	var last time.Time
 	for _, p := range r.LogPaths() {
 		if fi, err := os.Stat(p); err == nil && fi.ModTime().After(last) {
-			last = fi.ModTime()
+			last = fi.ModTime().In(now.Location()) // one time zone in all output
 		}
 	}
 	if !last.IsZero() {
 		r.LastRun = &last
 	}
-	if t, ok := r.spec.Next(env.Clock(), last); ok {
-		r.NextRun = &t
+	if t, est, ok := r.spec.Next(now, last); ok {
+		r.NextRun, r.NextRunEstimated = &t, est
 	}
 }
 
