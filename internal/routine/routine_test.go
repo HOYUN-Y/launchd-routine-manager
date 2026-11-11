@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -45,11 +46,11 @@ func TestDiscoverClassifies(t *testing.T) {
 	if r := m["dev.rtm.test.unrelated"]; r.AI || len(r.Evidence) != 0 {
 		t.Errorf("unrelated = %+v (PATH mentions .codex/.claude, args do not)", r)
 	}
-	if r := m["cron:4"]; !r.AI || r.Source != SourceCron || r.Schedule != "0 9 * * *" {
-		t.Errorf("cron:4 = %+v", r)
+	if r := m["cron:0ec33761"]; !r.AI || r.Source != SourceCron || r.Schedule != "0 9 * * *" {
+		t.Errorf("cron:0ec33761 = %+v", r)
 	}
-	if r := m["cron:5"]; r.AI {
-		t.Errorf("cron:5 = %+v", r)
+	if r := m["cron:e89e38a4"]; r.AI {
+		t.Errorf("cron:e89e38a4 = %+v", r)
 	}
 	if len(rs) != 6 { // 3 plists + 3 cron lines (incl. @reboot)
 		t.Errorf("got %d routines", len(rs))
@@ -133,7 +134,7 @@ func TestEnrichNotLoadedAndCron(t *testing.T) {
 		t.Errorf("not loaded: %+v next=%v", r.Status, r.NextRun)
 	}
 
-	c, _ := Find(rs, "cron:4")
+	c, _ := Find(rs, "cron:0ec33761")
 	Enrich(e, &c)
 	if c.Status != nil || c.StateText() != "-" {
 		t.Errorf("cron has no state: %+v", c.Status)
@@ -174,5 +175,62 @@ func TestEnrichLastRunFromLogMtime(t *testing.T) {
 	}
 	if got := r.LogPaths(); len(got) != 1 {
 		t.Errorf("same stdout/stderr must be one log path: %v", got)
+	}
+}
+
+// IDs are stored in config.json, so the hash must never change by accident.
+func TestCronIDGolden(t *testing.T) {
+	for want, in := range map[string][2]string{
+		"cron:0ec33761": {"0 9 * * *", `/opt/homebrew/bin/claude -p "daily summary" >> /tmp/summary.log 2>&1`},
+		"cron:e89e38a4": {"30 18 * * 1-5", "/usr/local/bin/backup-home"},
+	} {
+		if got := CronID(in[0], in[1]); got != want {
+			t.Errorf("CronID(%q, %q) = %s, want %s", in[0], in[1], got, want)
+		}
+	}
+}
+
+func TestCronIDSurvivesEditsAbove(t *testing.T) {
+	text := testutil.Crontab(t)
+	e1, _ := env(t, sys.Result{Out: text})
+	e2, _ := env(t, sys.Result{Out: "# new comment\n15 3 * * * /usr/bin/new-job\n\n" + text})
+	r1, _ := Discover(e1, []string{"cron:0ec33761"})
+	r2, _ := Discover(e2, []string{"cron:0ec33761"})
+
+	a, ok1 := Find(r1, "cron:0ec33761")
+	b, ok2 := Find(r2, "cron:0ec33761")
+	if !ok1 || !ok2 {
+		t.Fatalf("same entry must keep its ID after lines are added above (found %v, %v)", ok1, ok2)
+	}
+	if a.Line == b.Line {
+		t.Errorf("test is vacuous: line did not move (%d)", a.Line)
+	}
+	if !b.Tracked || !b.AI {
+		t.Errorf("tracked ID must still point at the same entry: %+v", b)
+	}
+	if len(r2) != len(r1)+1 {
+		t.Errorf("only the new job should be added: %d vs %d", len(r2), len(r1))
+	}
+	// the same command at a different time is a different routine
+	if CronID("0 10 * * *", "x") == CronID("0 9 * * *", "x") {
+		t.Error("schedule must be part of the ID")
+	}
+	for _, r := range r2 {
+		if r.Source == SourceCron && !regexp.MustCompile(`^cron:[0-9a-f]{8}$`).MatchString(r.Label) {
+			t.Errorf("bad cron ID %q", r.Label)
+		}
+	}
+}
+
+func TestDirectEvidenceNamesTheFile(t *testing.T) {
+	e, _ := env(t, sys.Result{Out: testutil.Crontab(t)})
+	rs, _ := Discover(e, nil)
+	p, _ := Find(rs, "dev.rtm.test.claude-direct")
+	if ev := p.Evidence[0]; ev.Kind != "direct" || ev.File != p.Path || ev.File == "" {
+		t.Errorf("plist evidence = %+v, want File = %q", ev, p.Path)
+	}
+	c, _ := Find(rs, "cron:0ec33761")
+	if ev := c.Evidence[0]; ev.File != "crontab" {
+		t.Errorf("cron evidence = %+v", ev)
 	}
 }

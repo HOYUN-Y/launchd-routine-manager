@@ -26,8 +26,8 @@ func testEnv(t *testing.T) sys.Env {
 
 func TestListDefaultIsAIOnly(t *testing.T) {
 	code, out, _ := exec(t, testEnv(t), "list")
-	if code != 0 || strings.Contains(out, "unrelated") || strings.Contains(out, "cron:5") ||
-		!strings.Contains(out, "claude-direct") || !strings.Contains(out, "cron:4") {
+	if code != 0 || strings.Contains(out, "unrelated") || strings.Contains(out, "cron:e89e38a4") ||
+		!strings.Contains(out, "claude-direct") || !strings.Contains(out, "cron:0ec33761") {
 		t.Fatalf("code=%d\n%s", code, out)
 	}
 }

@@ -68,17 +68,18 @@ func run(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) i
 	return 0
 }
 
-// discover loads the tracked list and scans; warnings go to stderr so --json stays clean.
-func discover(errw io.Writer, env sys.Env) ([]routine.Routine, error) {
+// discover loads the tracked list and scans. Warnings (unreadable plists, a broken config,
+// crontab trouble) are returned, not printed: only `list` and `doctor` show them, so
+// `show` and `logs` stay quiet about unrelated files. A broken config.json is a warning here
+// (tracked items are treated as absent); `track` and `untrack` refuse to write it.
+func discover(env sys.Env) ([]routine.Routine, []string) {
 	tracked, err := config.Load(config.Path(env.Home))
+	var warns []string
 	if err != nil {
-		return nil, err
+		warns = append(warns, "config: "+err.Error())
 	}
-	rs, warns := routine.Discover(env, tracked)
-	for _, w := range warns {
-		fmt.Fprintln(errw, "warning:", w)
-	}
-	return rs, nil
+	rs, w := routine.Discover(env, tracked)
+	return rs, append(warns, w...)
 }
 
 // parse lets flags come before or after positional args: `rtm show <label> --json`.
@@ -111,9 +112,9 @@ func cmdList(args []string, out, errw io.Writer, env sys.Env) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	rs, err := discover(errw, env)
-	if err != nil {
-		return err
+	rs, warns := discover(env)
+	for _, w := range warns {
+		fmt.Fprintln(errw, "warning:", w)
 	}
 	shown := make([]routine.Routine, 0, len(rs)) // non-nil: "[]" not "null"
 	for _, r := range rs {
@@ -168,10 +169,7 @@ func cmdTrack(add bool, args []string, out, errw io.Writer, env sys.Env) error {
 		fmt.Fprintf(out, "untracked %s\n", label)
 		return nil
 	}
-	rs, err := discover(errw, env)
-	if err != nil {
-		return err
-	}
+	rs, _ := discover(env)
 	found := false
 	for _, r := range rs {
 		found = found || r.Label == label

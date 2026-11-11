@@ -29,7 +29,7 @@ func cmdLogs(ctx context.Context, args []string, out, errw io.Writer, env sys.En
 	if len(pos) != 1 || *n < 0 {
 		return fmt.Errorf("usage: rtm logs <label> [-n 50] [-f]")
 	}
-	r, err := lookup(pos[0], errw, env)
+	r, err := lookup(pos[0], env)
 	if err != nil {
 		return err
 	}

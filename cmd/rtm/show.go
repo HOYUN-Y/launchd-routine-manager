@@ -12,11 +12,8 @@ import (
 )
 
 // lookup finds one routine by label and fills in its live state.
-func lookup(label string, errw io.Writer, env sys.Env) (routine.Routine, error) {
-	rs, err := discover(errw, env)
-	if err != nil {
-		return routine.Routine{}, err
-	}
+func lookup(label string, env sys.Env) (routine.Routine, error) {
+	rs, _ := discover(env)
 	r, ok := routine.Find(rs, label)
 	if !ok {
 		return r, fmt.Errorf("unknown label %q (see `rtm list --all`)", label)
@@ -36,7 +33,7 @@ func cmdShow(args []string, out, errw io.Writer, env sys.Env) error {
 	if len(pos) != 1 {
 		return fmt.Errorf("usage: rtm show <label> [--json]")
 	}
-	r, err := lookup(pos[0], errw, env)
+	r, err := lookup(pos[0], env)
 	if err != nil {
 		return err
 	}

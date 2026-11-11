@@ -29,15 +29,17 @@ func (e Evidence) String() string {
 
 var (
 	scriptExt = map[string]bool{".sh": true, ".zsh": true, ".bash": true, ".py": true}
-	aiCall    = regexp.MustCompile(`\b(claude\s+(-p|--print)\b|codex\s+exec\b)`)
+	// A quote may sit between the program name and its first argument: "/x/claude" -p
+	aiCall = regexp.MustCompile(`\b(claude["']?\s+(-p|--print)\b|codex["']?\s+exec\b)`)
 )
 
 // Classify returns evidence that args run claude/codex; nil means not an AI routine.
+// file is where args came from (plist path, or "crontab") and goes into direct evidence.
 // Rule 1: some token is a claude/codex executable. Rule 2 (only if rule 1 fails): the first
 // script among the tokens contains `claude -p`, `claude --print` or `codex exec`.
 // Only args are inspected, never EnvironmentVariables (PATH often mentions ".codex/...").
 // shortcut: tokens are split on whitespace, so `echo claude` counts as a hit; upgrade if it bites.
-func Classify(args []string, readFile func(string) ([]byte, error)) []Evidence {
+func Classify(file string, args []string, readFile func(string) ([]byte, error)) []Evidence {
 	var tokens []string
 	for _, a := range args {
 		for _, t := range strings.Fields(a) {
@@ -47,7 +49,7 @@ func Classify(args []string, readFile func(string) ([]byte, error)) []Evidence {
 	var ev []Evidence
 	for _, t := range tokens {
 		if b := filepath.Base(t); b == "claude" || b == "codex" {
-			ev = append(ev, Evidence{Kind: "direct", Text: t})
+			ev = append(ev, Evidence{Kind: "direct", File: file, Text: t})
 		}
 	}
 	if ev != nil {

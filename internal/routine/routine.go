@@ -2,6 +2,7 @@
 package routine
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,14 @@ const (
 	SourceSystem = "system_agent" // /Library/LaunchAgents (read-only)
 	SourceCron   = "cron"
 )
+
+// CronID identifies a crontab entry by what it does, not where it sits, so adding a line
+// above it does not change its ID (and so does not change what `rtm track` points at).
+// Two identical lines share one ID. The ID is stored in config.json: never change this.
+func CronID(schedule, command string) string {
+	sum := sha256.Sum256([]byte(schedule + "\x00" + command))
+	return fmt.Sprintf("cron:%x", sum[:4])
+}
 
 // Routine is serialized as-is for --json.
 type Routine struct {
@@ -77,7 +86,7 @@ func Discover(env sys.Env, tracked []string) ([]Routine, []string) {
 		}
 		for _, e := range entries {
 			out = append(out, Routine{
-				Label: fmt.Sprintf("cron:%d", e.Line), Source: SourceCron, Line: e.Line,
+				Label: CronID(e.Schedule, e.Command), Source: SourceCron, Line: e.Line,
 				Schedule: e.Schedule, Command: []string{"/bin/sh", "-c", e.Command},
 			})
 		}
@@ -85,7 +94,11 @@ func Discover(env sys.Env, tracked []string) ([]Routine, []string) {
 
 	for i := range out {
 		r := &out[i]
-		r.Evidence = classify.Classify(r.Command, os.ReadFile)
+		file := r.Path
+		if r.Source == SourceCron {
+			file = "crontab"
+		}
+		r.Evidence = classify.Classify(file, r.Command, os.ReadFile)
 		if slices.Contains(tracked, r.Label) {
 			r.Tracked = true
 			r.Evidence = append(r.Evidence, classify.Evidence{Kind: "tracked"})

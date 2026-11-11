@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/config"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/routine"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
 
@@ -37,6 +38,12 @@ func Run(env sys.Env) []Check {
 	checks = append(checks, agentsDir("user agents", filepath.Join(env.Home, "Library", "LaunchAgents"), env.UID, true))
 	checks = append(checks, agentsDir("system agents", env.SystemAgentsDir, env.UID, false))
 	checks = append(checks, launchctl(env))
+
+	// Files rtm had to skip (empty plists, unreadable files, crontab trouble) show up here.
+	_, warns := routine.Discover(env, nil)
+	for _, w := range warns {
+		checks = append(checks, Check{"scan", Warn, w})
+	}
 
 	cfg := config.Path(env.Home)
 	if tracked, err := config.Load(cfg); err != nil {

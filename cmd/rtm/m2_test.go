@@ -109,7 +109,7 @@ func TestShowNotLoadedAndErrors(t *testing.T) {
 	if code, _, errw := exec(t, env, "show"); code != 1 || !strings.Contains(errw, "usage") {
 		t.Fatalf("code=%d %q", code, errw)
 	}
-	if code, out, _ := exec(t, env, "show", "cron:4"); code != 0 || !strings.Contains(out, "n/a (crontab keeps no state)") {
+	if code, out, _ := exec(t, env, "show", "cron:0ec33761"); code != 0 || !strings.Contains(out, "n/a (crontab keeps no state)") {
 		t.Fatalf("cron show: code=%d\n%s", code, out)
 	}
 }
@@ -286,5 +286,68 @@ func TestOnlyReadOnlyCommands(t *testing.T) {
 		if !ok {
 			t.Errorf("non-read-only command ran: %q", c)
 		}
+	}
+}
+
+// A plist rtm cannot use: warned about by `list` and `doctor`, never by `show`/`logs`.
+func TestWarningsOnlyInListAndDoctor(t *testing.T) {
+	env := m2Env(t, "dev.rtm.test.claude-direct")
+	bad := filepath.Join(env.Home, "Library", "LaunchAgents", "empty.plist")
+	os.WriteFile(bad, []byte(`<?xml version="1.0"?><plist version="1.0"><dict/></plist>`), 0o644)
+	fr := env.Runner.(*sys.FakeRunner)
+	fr.Results["zsh -lc command -v claude"] = sys.Result{}
+	fr.Results["zsh -lc command -v codex"] = sys.Result{}
+	fr.Results["launchctl managername"] = sys.Result{Out: "Aqua\n"}
+
+	if _, _, errw := exec(t, env, "list"); !strings.Contains(errw, "empty.plist: no Label") {
+		t.Errorf("list should warn: %q", errw)
+	}
+	if _, out, _ := exec(t, env, "doctor"); !strings.Contains(out, "[warn] scan") || !strings.Contains(out, "empty.plist: no Label") {
+		t.Errorf("doctor should report the skipped file:\n%s", out)
+	}
+	for _, args := range [][]string{
+		{"show", "dev.rtm.test.claude-direct"}, {"show", "dev.rtm.test.claude-direct", "--json"},
+		{"logs", "dev.rtm.test.claude-direct"}, {"show", "nope"},
+	} {
+		if _, _, errw := exec(t, env, args...); strings.Contains(errw, "warning") || strings.Contains(errw, "empty.plist") {
+			t.Errorf("%v printed a scan warning: %q", args, errw)
+		}
+	}
+}
+
+// A broken config.json is a warning for readers, and an error (without touching the file) for track.
+func TestBrokenConfig(t *testing.T) {
+	env := m2Env(t)
+	cfg := filepath.Join(env.Home, ".config", "rtm", "config.json")
+	os.MkdirAll(filepath.Dir(cfg), 0o755)
+	broken := `{"tracked": ["a"`
+	os.WriteFile(cfg, []byte(broken), 0o644)
+
+	if code, _, errw := exec(t, env, "list", "--all"); code != 0 || !strings.Contains(errw, "warning: config:") {
+		t.Errorf("list: code=%d %q", code, errw)
+	}
+	if code, _, errw := exec(t, env, "track", "dev.rtm.test.unrelated"); code != 1 || !strings.Contains(errw, "will not overwrite") {
+		t.Errorf("track: code=%d %q", code, errw)
+	}
+	if code, _, _ := exec(t, env, "untrack", "dev.rtm.test.unrelated"); code != 1 {
+		t.Errorf("untrack on a broken file must fail, got %d", code)
+	}
+	if b, _ := os.ReadFile(cfg); string(b) != broken {
+		t.Errorf("config was modified: %s", b)
+	}
+}
+
+func TestTrackBracketLabelEndToEnd(t *testing.T) {
+	env := m2Env(t)
+	writePlist(t, env, "dev.rtm.test.a]b", "")
+	writePlist(t, env, "dev.rtm.test.b", "")
+	for _, l := range []string{"dev.rtm.test.a]b", "dev.rtm.test.b"} {
+		if code, _, errw := exec(t, env, "track", l); code != 0 {
+			t.Fatalf("track %s: %q", l, errw)
+		}
+	}
+	_, out, _ := exec(t, env, "list", "--json")
+	if !strings.Contains(out, `"dev.rtm.test.a]b"`) || !strings.Contains(out, `"dev.rtm.test.b"`) {
+		t.Errorf("both labels must be tracked:\n%s", out)
 	}
 }
