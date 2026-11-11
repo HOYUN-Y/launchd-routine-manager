@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -14,7 +15,7 @@ const scheduleUsage = `usage: rtm schedule <label> (--daily HH:MM | --weekly mon
 
 // cmdSchedule is `rtm schedule`. Confirmations are flags because the CLI is non-interactive:
 // --yes allows reloading a running job, --force allows replacing a schedule rtm cannot express.
-func cmdSchedule(args []string, out, errw io.Writer, env sys.Env) error {
+func cmdSchedule(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) error {
 	fs := flag.NewFlagSet("schedule", flag.ContinueOnError)
 	fs.SetOutput(errw)
 	daily := fs.String("daily", "", "run every day at HH:MM")
@@ -65,9 +66,9 @@ func cmdSchedule(args []string, out, errw io.Writer, env sys.Env) error {
 	}
 	var res routine.SchedResult
 	if *revert {
-		res, err = routine.RevertSchedule(env, r, o)
+		res, err = routine.RevertSchedule(ctx, env, r, o)
 	} else {
-		res, err = routine.SetSchedule(env, r, edit, o)
+		res, err = routine.SetSchedule(ctx, env, r, edit, o)
 	}
 	if res.BackupPath != "" && err != nil {
 		fmt.Fprintf(errw, "note: backup of the previous plist: %s\n", res.BackupPath)

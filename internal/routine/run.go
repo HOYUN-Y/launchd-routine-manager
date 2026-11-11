@@ -1,6 +1,7 @@
 package routine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -21,21 +22,28 @@ type RunOpts struct {
 }
 
 type RunResult struct {
+	Started      bool // launchd was asked to start it (or started it itself on bootstrap)
 	Bootstrapped bool // rtm registered the plist with launchd
 	Finished     bool // the job ran and is no longer running
 	Status       launchd.Status
 }
 
 // Run starts a routine through launchd (PLAN §5) so it runs in the same environment as a
-// scheduled run. Policy lives here so the CLI and the TUI share it; confirmations are flags.
+// scheduled run. Policy lives here so the CLI and the TUI share it. Whatever needs a yes comes
+// back as a *ConfirmError; the caller grants it (GrantRun) and calls again.
 //
-//	not loaded            -> refuse unless Load (then bootstrap)
-//	running               -> refuse unless Restart; a KeepAlive service also needs Yes
+//	not loaded            -> ConfirmError(load) unless Load (then bootstrap)
+//	running               -> ConfirmError(restart) unless Restart; a KeepAlive service also
+//	                         needs Yes (restart-keepalive)
 //	otherwise             -> kickstart
 //
-// Afterwards it re-reads the state for up to Wait until the job has finished (see waitDone).
-func Run(env sys.Env, r Routine, o RunOpts) (RunResult, error) {
+// Afterwards it re-reads the state until the job has finished (see waitDone) or o.Wait of real
+// time has passed. Cancelling ctx stops the waiting only; a job that was started keeps running.
+func Run(ctx context.Context, env sys.Env, r Routine, o RunOpts) (RunResult, error) {
 	var res RunResult
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
 	if r.Source == SourceCron {
 		return res, fmt.Errorf("%s is a crontab entry; rtm run only starts launchd jobs", r.Label)
 	}
@@ -46,7 +54,7 @@ func Run(env sys.Env, r Routine, o RunOpts) (RunResult, error) {
 	switch {
 	case !st.Loaded:
 		if !o.Load {
-			return res, fmt.Errorf("%s is not loaded; add --load to register it with launchctl bootstrap first", r.Label)
+			return res, &ConfirmError{NeedLoad, fmt.Sprintf("%s is not loaded; add --load to register it with launchctl bootstrap first", r.Label)}
 		}
 		if err := launchd.Bootstrap(env.Runner, env.UID, r.Label, r.Path); err != nil {
 			return res, err
@@ -60,15 +68,19 @@ func Run(env sys.Env, r Routine, o RunOpts) (RunResult, error) {
 		if st.Runs > 0 {
 			// RunAtLoad/KeepAlive: launchd already started it. A kickstart now would be a no-op
 			// or a needless second run, so just watch this one.
-			return waitDone(env, r.Label, st.Runs-1, o, res)
+			res.Started = true
+			return waitDone(ctx, env, r.Label, st.Runs-1, o, res)
 		}
 		baseline = st.Runs
-	case st.State == "running":
+	case st.IsRunning():
 		if !o.Restart {
-			return res, fmt.Errorf("%s is already running (pid %d); use --restart to restart it", r.Label, st.PID)
+			if r.KeepAlive() {
+				return res, &ConfirmError{NeedRestartKeepAlive, fmt.Sprintf("%s is already running (pid %d) and is a KeepAlive service; restarting it needs --restart --yes", r.Label, st.PID)}
+			}
+			return res, &ConfirmError{NeedRestart, fmt.Sprintf("%s is already running (pid %d); use --restart to restart it", r.Label, st.PID)}
 		}
 		if r.KeepAlive() && !o.Yes {
-			return res, fmt.Errorf("%s is a KeepAlive service; restarting it needs --yes as well as --restart", r.Label)
+			return res, &ConfirmError{NeedRestartKeepAlive, fmt.Sprintf("%s is a KeepAlive service; restarting it needs --yes as well as --restart", r.Label)}
 		}
 		kill = true
 	}
@@ -76,28 +88,46 @@ func Run(env sys.Env, r Routine, o RunOpts) (RunResult, error) {
 	if err := launchd.Kickstart(env.Runner, env.UID, r.Label, kill); err != nil {
 		return res, err
 	}
-	return waitDone(env, r.Label, baseline, o, res)
+	res.Started = true
+	return waitDone(ctx, env, r.Label, baseline, o, res)
 }
 
-func waitDone(env sys.Env, label string, baseline int, o RunOpts, res RunResult) (RunResult, error) {
+// waitDone polls until the job has finished: no live process, one more run than before, and
+// an exit code to report. Real launchd passes through `state = xpcproxy` (pid set, "(never
+// exited)") while the job starts, and keeps the PREVIOUS run's exit code until the new one
+// ends, so the state text and the counter alone would call a run in flight finished.
+// The limit is a real deadline, so slow `launchctl print` calls do not stretch it.
+func waitDone(ctx context.Context, env sys.Env, label string, baseline int, o RunOpts, res RunResult) (RunResult, error) {
 	poll := o.Poll
 	if poll <= 0 {
 		poll = 200 * time.Millisecond
 	}
-	for i := 0; ; i++ {
+	deadline := time.Now().Add(o.Wait)
+	for {
 		st := launchd.Query(env.Runner, env.UID, label)
 		res.Status = st
-		// Finished = no live process, one more run than before, and an exit code to report.
-		// Real launchd passes through `state = xpcproxy` (pid set, "(never exited)") while the
-		// job starts, and keeps the PREVIOUS run's exit code until the new one ends, so the state
-		// text and the counter alone would report a run that is still in flight as finished.
-		if st.Loaded && st.PID == 0 && st.State != "running" && st.Runs > baseline && st.LastExitCode != nil {
+		if st.Loaded && !st.IsRunning() && st.Runs > baseline && st.LastExitCode != nil {
 			res.Finished = true
 			return res, nil
 		}
-		if time.Duration(i)*poll >= o.Wait {
+		left := time.Until(deadline)
+		if left <= 0 {
 			return res, nil
 		}
-		time.Sleep(poll)
+		if !sleep(ctx, min(poll, left)) {
+			return res, ctx.Err()
+		}
+	}
+}
+
+// sleep waits d, or returns false as soon as ctx is cancelled.
+func sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }

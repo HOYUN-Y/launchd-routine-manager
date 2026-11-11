@@ -31,6 +31,34 @@ func guard(label string) error {
 	return nil
 }
 
+// guardPlist is guard for calls that act on a plist FILE. launchd identifies a job by the
+// Label inside the file, not by the label argument, so with the guard on the file must really
+// be that test job: it has to parse, and its Label has to equal label. A file that does not
+// exist yet is fine only when mustExist is false (WritePlist creating a test plist).
+func guardPlist(label, path string, mustExist bool) error {
+	if err := guard(label); err != nil {
+		return err
+	}
+	if os.Getenv(GuardEnv) != "1" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) && !mustExist {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("refusing to change %q: cannot read %s to check its Label: %w", label, path, err)
+	}
+	p, err := Parse(data)
+	if err != nil {
+		return fmt.Errorf("refusing to change %q: %s does not parse as a plist with a Label: %w", label, path, err)
+	}
+	if p.Label != label {
+		return fmt.Errorf("refusing to change %q: %s has Label %q", label, path, p.Label)
+	}
+	return nil
+}
+
 // CheckLabel lets callers refuse before doing any preparatory work (a backup, say).
 func CheckLabel(label string) error { return guard(label) }
 
@@ -52,7 +80,7 @@ func Kickstart(r sys.Runner, uid int, label string, kill bool) error {
 
 // Bootstrap registers a plist with launchd (launchctl bootstrap gui/<uid> <plist>).
 func Bootstrap(r sys.Runner, uid int, label, plistPath string) error {
-	if err := guard(label); err != nil {
+	if err := guardPlist(label, plistPath, true); err != nil {
 		return err
 	}
 	_, err := r.Run("launchctl", "bootstrap", domain(uid), plistPath)
@@ -72,8 +100,13 @@ func Bootout(r sys.Runner, uid int, label string) error {
 // rename), keeping the old file's permissions. This is the only function that writes a
 // LaunchAgent plist.
 func WritePlist(label, path string, data []byte) error {
-	if err := guard(label); err != nil {
+	if err := guardPlist(label, path, false); err != nil { // the file being replaced
 		return err
+	}
+	if os.Getenv(GuardEnv) == "1" { // and the content being written
+		if p, err := Parse(data); err != nil || p.Label != label {
+			return fmt.Errorf("refusing to write %q: the new content does not have Label %q (%v)", path, label, err)
+		}
 	}
 	mode := os.FileMode(0o644)
 	if fi, err := os.Stat(path); err == nil {

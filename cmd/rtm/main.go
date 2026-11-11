@@ -57,9 +57,9 @@ func run(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) i
 	case "show":
 		err = cmdShow(args[1:], out, errw, env)
 	case "run":
-		err = cmdRun(args[1:], out, errw, env)
+		err = cmdRun(ctx, args[1:], out, errw, env)
 	case "schedule":
-		err = cmdSchedule(args[1:], out, errw, env)
+		err = cmdSchedule(ctx, args[1:], out, errw, env)
 	case "logs":
 		err = cmdLogs(ctx, args[1:], out, errw, env)
 	case "doctor":

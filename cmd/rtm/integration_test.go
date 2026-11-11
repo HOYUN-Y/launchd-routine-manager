@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"html"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/inttest"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/launchd"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
@@ -21,98 +21,10 @@ import (
 //
 //	RTM_INTEGRATION=1 go test -count=1 -run TestIntegration -v ./cmd/rtm
 
-// itest is the shared setup of the integration tests.
-type itest struct {
-	env    sys.Env
-	agents string
-	logs   string
-	create func(t *testing.T, name, script, extra string) string
-}
-
-func (it *itest) read(name, ext string) string {
-	b, _ := os.ReadFile(filepath.Join(it.logs, name+"."+ext))
-	return string(b)
-}
-
-// newIntegration skips unless RTM_INTEGRATION=1, turns on the dev guard, and registers a final
-// check that nothing of ours is left: no plist, no process, no backup file.
-func newIntegration(t *testing.T) *itest {
-	t.Helper()
-	if os.Getenv("RTM_INTEGRATION") != "1" {
-		t.Skip("set RTM_INTEGRATION=1 to run against the real launchd (dev.rtm.test.* jobs only)")
-	}
-	t.Setenv(launchd.GuardEnv, "1")
-	env, err := sys.Real()
-	if err != nil {
-		t.Fatal(err)
-	}
-	it := &itest{env: env, agents: filepath.Join(env.Home, "Library", "LaunchAgents"), logs: t.TempDir()}
-
-	backups := launchd.BackupDir(env.Home)
-	rtmDir := filepath.Dir(backups)
-	_, errB := os.Stat(backups)
-	_, errR := os.Stat(rtmDir)
-	madeBackupDir, madeRtmDir := errB != nil, errR != nil
-
-	// Registered first, so it runs last: nothing may be left behind.
-	t.Cleanup(func() {
-		mine, _ := filepath.Glob(filepath.Join(backups, launchd.TestPrefix+"*"))
-		for _, f := range mine {
-			os.Remove(f) // backups of our own test labels
-		}
-		if madeBackupDir {
-			os.Remove(backups) // only succeeds if empty
-		}
-		if madeRtmDir {
-			os.Remove(rtmDir)
-		}
-		left, _ := filepath.Glob(filepath.Join(it.agents, launchd.TestPrefix+"*"))
-		hidden, _ := filepath.Glob(filepath.Join(it.agents, ".dev.rtm.test.*")) // WritePlist temp files
-		if len(left)+len(hidden) != 0 {
-			t.Errorf("leftover test files in LaunchAgents: %v %v", left, hidden)
-		}
-		if out, _ := osexec.Command("pgrep", "-f", "sleep 311").Output(); len(out) != 0 {
-			t.Errorf("leftover test process (sleep 311): pid %s", strings.TrimSpace(string(out)))
-		}
-		if left, _ := filepath.Glob(filepath.Join(backups, launchd.TestPrefix+"*")); len(left) != 0 {
-			t.Errorf("leftover test backups: %v", left)
-		}
-	})
-
-	// create writes dev.rtm.test.<name>.plist and arranges its removal.
-	it.create = func(t *testing.T, name, script, extra string) string {
-		t.Helper()
-		label := launchd.TestPrefix + name
-		path := filepath.Join(it.agents, label+".plist")
-		launchd.Bootout(env.Runner, env.UID, label) // leftovers of an aborted earlier run; error = not loaded
-		os.Remove(path)
-		t.Cleanup(func() {
-			launchd.Bootout(env.Runner, env.UID, label)
-			os.Remove(path)
-		})
-		body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>%s</string>
-<key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>%s</string></array>
-<key>StandardOutPath</key><string>%s</string>
-<key>StandardErrorPath</key><string>%s</string>
-%s</dict></plist>
-`, label, html.EscapeString(script), filepath.Join(it.logs, name+".out"), filepath.Join(it.logs, name+".err"), extra)
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if out, err := osexec.Command("plutil", "-lint", path).CombinedOutput(); err != nil {
-			t.Fatalf("plutil: %s", out)
-		}
-		return label
-	}
-	return it
-}
-
 func TestIntegrationRun(t *testing.T) {
-	it := newIntegration(t)
-	env, create, read := it.env, it.create, it.read
+	it := inttest.New(t)
+	env, read := it.Env, it.Read
+	create := it.Create
 
 	t.Run("ok exits 0", func(t *testing.T) {
 		label := create(t, "ok", "echo hello-ok; exit 0", "")
@@ -209,13 +121,13 @@ func holds(t *testing.T, env sys.Env, label string) launchd.Status {
 }
 
 func TestIntegrationSchedule(t *testing.T) {
-	it := newIntegration(t)
-	env := it.env
+	it := inttest.New(t)
+	env := it.Env
 
 	t.Run("change, reload, verify, revert", func(t *testing.T) {
-		label := it.create(t, "sched", "echo sched; exit 0",
+		label := it.Create(t, "sched", "echo sched; exit 0",
 			"<key>StartInterval</key><integer>3600</integer>\n<key>EnvironmentVariables</key><dict><key>RTM_PROBE</key><string>keepme</string></dict>\n")
-		path := filepath.Join(it.agents, label+".plist")
+		path := filepath.Join(it.Agents, label+".plist")
 		original, _ := os.ReadFile(path)
 		if err := launchd.Bootstrap(env.Runner, env.UID, label, path); err != nil {
 			t.Fatal(err)
@@ -307,8 +219,8 @@ func TestIntegrationSchedule(t *testing.T) {
 	})
 
 	t.Run("running job needs --yes", func(t *testing.T) {
-		label := it.create(t, "schedrun", "exec /bin/sleep 311", "<key>KeepAlive</key><true/>\n")
-		path := filepath.Join(it.agents, label+".plist")
+		label := it.Create(t, "schedrun", "exec /bin/sleep 311", "<key>KeepAlive</key><true/>\n")
+		path := filepath.Join(it.Agents, label+".plist")
 		if code, out, errw := exec(t, env, "run", label, "--load", "--wait", "3s"); code != 0 {
 			t.Fatalf("run --load: code=%d\n%s%s", code, out, errw)
 		}

@@ -1,6 +1,8 @@
 package routine
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -63,7 +65,7 @@ func opts(f func(*RunOpts)) RunOpts { o := fast; f(&o); return o }
 
 func TestRunNotLoadedWithoutLoadIsRefused(t *testing.T) {
 	f := newFix(notLoaded)
-	_, err := Run(f.env, rt, fast)
+	_, err := Run(context.Background(), f.env, rt, fast)
 	if err == nil || !strings.Contains(err.Error(), "--load") {
 		t.Fatalf("err = %v", err)
 	}
@@ -74,7 +76,7 @@ func TestRunNotLoadedWithoutLoadIsRefused(t *testing.T) {
 
 func TestRunNotLoadedWithLoad(t *testing.T) {
 	f := newFix(notLoaded, printOut("not running", 0, 0, ""), printOut("running", 7, 1, ""), printOut("not running", 0, 1, "0"))
-	res, err := Run(f.env, rt, opts(func(o *RunOpts) { o.Load = true }))
+	res, err := Run(context.Background(), f.env, rt, opts(func(o *RunOpts) { o.Load = true }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +92,7 @@ func TestRunNotLoadedWithLoad(t *testing.T) {
 // RunAtLoad/KeepAlive jobs are already started by bootstrap: no extra kickstart.
 func TestRunBootstrapAlreadyStartedByLaunchd(t *testing.T) {
 	f := newFix(notLoaded, printOut("running", 7, 1, ""), printOut("not running", 0, 1, "0"))
-	res, err := Run(f.env, rt, opts(func(o *RunOpts) { o.Load = true }))
+	res, err := Run(context.Background(), f.env, rt, opts(func(o *RunOpts) { o.Load = true }))
 	if err != nil || !res.Finished || !res.Bootstrapped {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -101,7 +103,7 @@ func TestRunBootstrapAlreadyStartedByLaunchd(t *testing.T) {
 
 func TestRunLoadedNotRunningKickstarts(t *testing.T) {
 	f := newFix(printOut("not running", 0, 3, "0"), printOut("not running", 0, 3, "0"), printOut("not running", 0, 4, "1"))
-	res, err := Run(f.env, rt, fast)
+	res, err := Run(context.Background(), f.env, rt, fast)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +118,7 @@ func TestRunLoadedNotRunningKickstarts(t *testing.T) {
 
 func TestRunRunningWithoutRestartIsRefused(t *testing.T) {
 	f := newFix(printOut("running", 99, 1, ""))
-	_, err := Run(f.env, rt, fast)
+	_, err := Run(context.Background(), f.env, rt, fast)
 	if err == nil || !strings.Contains(err.Error(), "already running (pid 99)") || !strings.Contains(err.Error(), "--restart") {
 		t.Fatalf("err = %v", err)
 	}
@@ -127,7 +129,7 @@ func TestRunRunningWithoutRestartIsRefused(t *testing.T) {
 
 func TestRunRestart(t *testing.T) {
 	f := newFix(printOut("running", 99, 1, ""), printOut("running", 100, 2, ""), printOut("not running", 0, 2, "0"))
-	res, err := Run(f.env, rt, opts(func(o *RunOpts) { o.Restart = true }))
+	res, err := Run(context.Background(), f.env, rt, opts(func(o *RunOpts) { o.Restart = true }))
 	if err != nil || !res.Finished {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -138,7 +140,7 @@ func TestRunRestart(t *testing.T) {
 
 func TestRunRestartOfNotRunningJobIsPlainKickstart(t *testing.T) {
 	f := newFix(printOut("not running", 0, 1, "0"), printOut("not running", 0, 2, "0"))
-	if _, err := Run(f.env, rt, opts(func(o *RunOpts) { o.Restart = true })); err != nil {
+	if _, err := Run(context.Background(), f.env, rt, opts(func(o *RunOpts) { o.Restart = true })); err != nil {
 		t.Fatal(err)
 	}
 	if m := f.mutations(); len(m) != 1 || strings.Contains(m[0], "-k") {
@@ -151,7 +153,7 @@ func TestRunKeepAliveRestartNeedsYes(t *testing.T) {
 	svc.spec = schedule.Spec{KeepAlive: true}
 
 	f := newFix(printOut("running", 99, 1, ""))
-	_, err := Run(f.env, svc, opts(func(o *RunOpts) { o.Restart = true }))
+	_, err := Run(context.Background(), f.env, svc, opts(func(o *RunOpts) { o.Restart = true }))
 	if err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("err = %v", err)
 	}
@@ -160,7 +162,7 @@ func TestRunKeepAliveRestartNeedsYes(t *testing.T) {
 	}
 
 	f = newFix(printOut("running", 99, 1, ""), printOut("not running", 0, 2, "0"))
-	if _, err := Run(f.env, svc, opts(func(o *RunOpts) { o.Restart, o.Yes = true, true })); err != nil {
+	if _, err := Run(context.Background(), f.env, svc, opts(func(o *RunOpts) { o.Restart, o.Yes = true, true })); err != nil {
 		t.Fatal(err)
 	}
 	if m := f.mutations(); len(m) != 1 || !strings.Contains(m[0], "kickstart -k") {
@@ -169,7 +171,7 @@ func TestRunKeepAliveRestartNeedsYes(t *testing.T) {
 
 	// --yes alone does not restart a running job
 	f = newFix(printOut("running", 99, 1, ""))
-	if _, err := Run(f.env, svc, opts(func(o *RunOpts) { o.Yes = true })); err == nil {
+	if _, err := Run(context.Background(), f.env, svc, opts(func(o *RunOpts) { o.Yes = true })); err == nil {
 		t.Error("--yes without --restart must still be refused")
 	}
 }
@@ -177,7 +179,7 @@ func TestRunKeepAliveRestartNeedsYes(t *testing.T) {
 func TestRunStillRunningAfterWait(t *testing.T) {
 	f := newFix(printOut("not running", 0, 1, "0"))
 	f.fr.Results["launchctl print gui/501/"+lbl] = printOut("running", 5, 2, "") // never finishes
-	res, err := Run(f.env, rt, fast)
+	res, err := Run(context.Background(), f.env, rt, fast)
 	if err != nil || res.Finished || res.Status.State != "running" || res.Status.PID != 5 {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -186,7 +188,7 @@ func TestRunStillRunningAfterWait(t *testing.T) {
 func TestRunKickstartFailure(t *testing.T) {
 	f := newFix(notLoaded, printOut("not running", 0, 0, ""))
 	f.fr.Results["launchctl kickstart gui/501/"+lbl] = sys.Result{Err: fmt.Errorf("Could not find service")}
-	res, err := Run(f.env, rt, opts(func(o *RunOpts) { o.Load = true }))
+	res, err := Run(context.Background(), f.env, rt, opts(func(o *RunOpts) { o.Load = true }))
 	if err == nil {
 		t.Fatal("error expected")
 	}
@@ -197,7 +199,7 @@ func TestRunKickstartFailure(t *testing.T) {
 
 func TestRunCronIsRefused(t *testing.T) {
 	f := newFix()
-	_, err := Run(f.env, Routine{Label: "cron:0ec33761", Source: SourceCron}, fast)
+	_, err := Run(context.Background(), f.env, Routine{Label: "cron:0ec33761", Source: SourceCron}, fast)
 	if err == nil || !strings.Contains(err.Error(), "crontab") || len(f.fr.Calls) != 0 {
 		t.Fatalf("err=%v calls=%v", err, f.fr.Calls)
 	}
@@ -217,7 +219,7 @@ func TestRunGuardProtectsRealLabels(t *testing.T) {
 	}
 	env := sys.Env{UID: 501, Runner: fr}
 	for _, o := range []RunOpts{{Restart: true, Yes: true}, {}, {Load: true}} {
-		if _, err := Run(env, real, o); err == nil || !strings.Contains(err.Error(), "refusing") {
+		if _, err := Run(context.Background(), env, real, o); err == nil || !strings.Contains(err.Error(), "refusing") {
 			t.Errorf("opts %+v: err = %v", o, err)
 		}
 	}
@@ -237,7 +239,7 @@ func TestRunDoesNotCallAnInFlightRunFinished(t *testing.T) {
 		printOut("running", 4450, 2, "0"),  // running
 		printOut("not running", 0, 2, "7"), // really done
 	)
-	res, err := Run(f.env, rt, fast)
+	res, err := Run(context.Background(), f.env, rt, fast)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,8 +252,135 @@ func TestRunDoesNotCallAnInFlightRunFinished(t *testing.T) {
 func TestRunNeedsAnExitCode(t *testing.T) {
 	f := newFix(printOut("not running", 0, 0, ""))
 	f.fr.Results["launchctl print gui/501/"+lbl] = printOut("spawn scheduled", 0, 1, "")
-	res, err := Run(f.env, rt, fast)
+	res, err := Run(context.Background(), f.env, rt, fast)
 	if err != nil || res.Finished {
 		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+// Codex P1: run only treated state=="running" as running, so a job in xpcproxy (pid set) was
+// kickstarted without -k. run and schedule now share Status.IsRunning.
+func TestRunTreatsAPidAsRunning(t *testing.T) {
+	f := newFix(printOut("xpcproxy", 4450, 2, "0"), printOut("running", 4451, 3, "0"), printOut("not running", 0, 3, "0"))
+	if _, err := Run(context.Background(), f.env, rt, fast); err == nil {
+		t.Fatal("a job that has a live process must not be kickstarted without --restart")
+	}
+	if f.kicked() {
+		t.Errorf("mutations = %v", f.mutations())
+	}
+
+	f = newFix(printOut("xpcproxy", 4450, 2, "0"), printOut("running", 4451, 3, "0"), printOut("not running", 0, 3, "0"))
+	if _, err := Run(context.Background(), f.env, rt, opts(func(o *RunOpts) { o.Restart = true })); err != nil {
+		t.Fatal(err)
+	}
+	if m := f.mutations(); len(m) != 1 || !strings.Contains(m[0], "kickstart -k") {
+		t.Errorf("mutations = %v, a starting job must be restarted with -k", m)
+	}
+}
+
+func TestConfirmErrors(t *testing.T) {
+	var ce *ConfirmError
+
+	// not loaded
+	f := newFix(notLoaded)
+	_, err := Run(context.Background(), f.env, rt, fast)
+	if !errors.As(err, &ce) || ce.Need != NeedLoad {
+		t.Fatalf("err = %#v", err)
+	}
+	o := fast
+	ce.GrantRun(&o)
+	if !o.Load || o.Restart || o.Yes {
+		t.Errorf("granting load: %+v", o)
+	}
+
+	// running
+	f = newFix(printOut("running", 9, 1, ""))
+	_, err = Run(context.Background(), f.env, rt, fast)
+	if !errors.As(err, &ce) || ce.Need != NeedRestart {
+		t.Fatalf("err = %#v", err)
+	}
+	o = fast
+	ce.GrantRun(&o)
+	if !o.Restart || o.Yes {
+		t.Errorf("granting restart: %+v", o)
+	}
+
+	// running KeepAlive service: both Restart and Yes in one answer
+	svc := rt
+	svc.spec = schedule.Spec{KeepAlive: true}
+	f = newFix(printOut("running", 9, 1, ""))
+	_, err = Run(context.Background(), f.env, svc, fast)
+	if !errors.As(err, &ce) || ce.Need != NeedRestartKeepAlive {
+		t.Fatalf("err = %#v", err)
+	}
+	o = fast
+	ce.GrantRun(&o)
+	if !o.Restart || !o.Yes {
+		t.Errorf("granting restart-keepalive: %+v", o)
+	}
+	f = newFix(printOut("running", 9, 1, ""), printOut("not running", 0, 2, "0"))
+	if _, err := Run(context.Background(), f.env, svc, o); err != nil {
+		t.Errorf("after the grant the run must go through: %v", err)
+	}
+
+	// the message is still the CLI wording
+	if !strings.Contains(ce.Error(), "--yes") {
+		t.Errorf("message = %q", ce.Error())
+	}
+}
+
+// slowRunner makes every command take d, like a slow `launchctl print`.
+type slowRunner struct {
+	sys.Runner
+	d time.Duration
+}
+
+func (s slowRunner) Run(name string, args ...string) (string, error) {
+	time.Sleep(s.d)
+	return s.Runner.Run(name, args...)
+}
+
+// Codex P1: the limit was a count of sleeps, so time spent in Query was not counted.
+func TestRunWaitIsARealDeadline(t *testing.T) {
+	f := newFix(printOut("not running", 0, 1, "0"))
+	f.fr.Results["launchctl print gui/501/"+lbl] = printOut("running", 5, 2, "") // never finishes
+	f.env.Runner = slowRunner{f.fr, 40 * time.Millisecond}
+	start := time.Now()
+	res, err := Run(context.Background(), f.env, rt, RunOpts{Wait: 150 * time.Millisecond, Poll: 10 * time.Millisecond})
+	took := time.Since(start)
+	if err != nil || res.Finished {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	// A sleep-count loop would run ~15 polls of (40ms query + 10ms sleep) = 750ms.
+	if took > 400*time.Millisecond {
+		t.Errorf("took %v for a 150ms wait: the deadline must be real time", took)
+	}
+}
+
+func TestRunStopsWaitingWhenCancelled(t *testing.T) {
+	f := newFix(printOut("not running", 0, 1, "0"))
+	f.fr.Results["launchctl print gui/501/"+lbl] = printOut("running", 5, 2, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(60 * time.Millisecond); cancel() }()
+	start := time.Now()
+	res, err := Run(ctx, f.env, rt, RunOpts{Wait: 10 * time.Second, Poll: 20 * time.Millisecond})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("took %v: cancelling must end the wait", time.Since(start))
+	}
+	if !res.Started || !f.kicked() {
+		t.Errorf("the job was started before the wait; res=%+v", res)
+	}
+}
+
+func TestRunDoesNothingWhenAlreadyCancelled(t *testing.T) {
+	f := newFix(printOut("not running", 0, 1, "0"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := Run(ctx, f.env, rt, fast)
+	if !errors.Is(err, context.Canceled) || res.Started || len(f.fr.Calls) != 0 {
+		t.Fatalf("res=%+v err=%v calls=%v", res, err, f.fr.Calls)
 	}
 }

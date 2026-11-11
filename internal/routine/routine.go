@@ -101,6 +101,13 @@ func Discover(env sys.Env, tracked []string) ([]Routine, []string) {
 			file = "crontab"
 		}
 		r.Evidence = classify.Classify(file, r.Command, os.ReadFile)
+		if r.Source == SourceCron {
+			for j := range r.Evidence {
+				if r.Evidence[j].Kind == "direct" {
+					r.Evidence[j].Line = r.Line // plist evidence needs only the path; cron needs the line
+				}
+			}
+		}
 		if slices.Contains(tracked, r.Label) {
 			r.Tracked = true
 			r.Evidence = append(r.Evidence, classify.Evidence{Kind: "tracked"})

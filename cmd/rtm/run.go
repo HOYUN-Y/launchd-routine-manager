@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,7 +14,7 @@ import (
 
 // cmdRun is `rtm run <label> [--restart] [--yes] [--load] [--wait 10s]`. Confirmations are
 // flags because the CLI is non-interactive.
-func cmdRun(args []string, out, errw io.Writer, env sys.Env) error {
+func cmdRun(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(errw)
 	var o routine.RunOpts
@@ -32,10 +34,17 @@ func cmdRun(args []string, out, errw io.Writer, env sys.Env) error {
 		return err
 	}
 
-	res, err := routine.Run(env, r, o)
+	res, err := routine.Run(ctx, env, r, o)
 	if err != nil {
 		if res.Bootstrapped {
 			fmt.Fprintf(errw, "note: %s was registered with launchd (bootstrap) before this failed\n", r.Label)
+		}
+		if errors.Is(err, context.Canceled) {
+			if res.Started {
+				fmt.Fprintf(errw, "note: interrupted while waiting; %s was started and keeps running: rtm show %s\n", r.Label, r.Label)
+			} else {
+				fmt.Fprintf(errw, "note: interrupted; %s was not started\n", r.Label)
+			}
 		}
 		return err
 	}

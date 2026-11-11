@@ -117,3 +117,22 @@ func TestParsePrintLoadedScheduleInRealSamples(t *testing.T) {
 		t.Errorf("exited.txt: calendars=%v interval=%d, want none and 3600", st.Calendars, st.RunInterval)
 	}
 }
+
+func TestIsRunning(t *testing.T) {
+	for name, c := range map[string]struct {
+		st   Status
+		want bool
+	}{
+		"running":                {Status{Loaded: true, State: "running", PID: 5}, true},
+		"running without pid":    {Status{Loaded: true, State: "running"}, true},
+		"starting: xpcproxy+pid": {Status{Loaded: true, State: "xpcproxy", PID: 4450}, true},
+		"idle":                   {Status{Loaded: true, State: "not running"}, false},
+		"scheduled":              {Status{Loaded: true, State: "spawn scheduled"}, false},
+		"not loaded":             {Status{}, false},
+		"stale pid, not loaded":  {Status{PID: 9}, false},
+	} {
+		if got := c.st.IsRunning(); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+}

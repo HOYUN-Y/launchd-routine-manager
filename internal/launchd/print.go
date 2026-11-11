@@ -26,6 +26,10 @@ type Status struct {
 	RunInterval int                 `json:"-"` // seconds, 0 if none
 }
 
+// IsRunning reports a live process. While a job starts, launchd shows `state = xpcproxy` with a
+// pid, so the pid counts as much as `state = running`. run and schedule both decide with this.
+func (s Status) IsRunning() bool { return s.Loaded && (s.State == "running" || s.PID != 0) }
+
 // Query asks launchd about one service (launchctl print). It is read-only. Any failure
 // (exit 113 "Could not find service", ...) means "not loaded".
 func Query(r sys.Runner, uid int, label string) Status {

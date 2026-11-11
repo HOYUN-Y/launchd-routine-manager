@@ -2,6 +2,7 @@ package routine
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -31,7 +32,10 @@ type SchedResult struct {
 // SetSchedule changes a routine's schedule (PLAN §6). Order: refuse early, back up, write only
 // the schedule keys, plutil -lint, bootout + bootstrap, then read launchd's state to confirm.
 // Every step after the write undoes the write when it fails.
-func SetSchedule(env sys.Env, r Routine, e schedule.Edit, o SchedOpts) (SchedResult, error) {
+func SetSchedule(ctx context.Context, env sys.Env, r Routine, e schedule.Edit, o SchedOpts) (SchedResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SchedResult{}, err
+	}
 	if err := editable(env, r); err != nil {
 		return SchedResult{}, err
 	}
@@ -51,19 +55,22 @@ func SetSchedule(env sys.Env, r Routine, e schedule.Edit, o SchedOpts) (SchedRes
 		return res, nil
 	}
 	if !cur.Schedule.Expressible() && !o.Force {
-		return res, fmt.Errorf("the current schedule of %s cannot be expressed by rtm: %s\n"+
-			"overwriting it would lose that; add --force to replace it (the old plist is backed up)", r.Label, res.Before)
+		return res, &ConfirmError{NeedForce, fmt.Sprintf("the current schedule of %s cannot be expressed by rtm: %s\n"+
+			"overwriting it would lose that; add --force to replace it (the old plist is backed up)", r.Label, res.Before)}
 	}
 	updated, err := launchd.ReplaceSchedule(orig, e)
 	if err != nil {
 		return res, err
 	}
-	return apply(env, r, orig, updated, e.Spec(), &res, o, "")
+	return apply(ctx, env, r, orig, updated, e.Spec(), &res, o, "")
 }
 
 // RevertSchedule restores the newest backup made by SetSchedule. The plist it replaces is kept
 // as <label>-<time>-pre-revert.plist in the same directory, so a revert cannot lose hand edits.
-func RevertSchedule(env sys.Env, r Routine, o SchedOpts) (SchedResult, error) {
+func RevertSchedule(ctx context.Context, env sys.Env, r Routine, o SchedOpts) (SchedResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SchedResult{}, err
+	}
 	if err := editable(env, r); err != nil {
 		return SchedResult{}, err
 	}
@@ -89,15 +96,15 @@ func RevertSchedule(env sys.Env, r Routine, o SchedOpts) (SchedResult, error) {
 		res.Unchanged = true
 		return res, nil
 	}
-	return apply(env, r, orig, backup, want, &res, o, "pre-revert")
+	return apply(ctx, env, r, orig, backup, want, &res, o, "pre-revert")
 }
 
 // apply is the shared tail: save orig, write updated, lint, reload, confirm that launchd (or,
 // for a job that is not loaded, the file) holds want.
-func apply(env sys.Env, r Routine, orig, updated []byte, want schedule.Spec, res *SchedResult, o SchedOpts, backupSuffix string) (SchedResult, error) {
+func apply(ctx context.Context, env sys.Env, r Routine, orig, updated []byte, want schedule.Spec, res *SchedResult, o SchedOpts, backupSuffix string) (SchedResult, error) {
 	st := launchd.Query(env.Runner, env.UID, r.Label)
-	if st.Loaded && (st.PID != 0 || st.State == "running") && !o.Yes {
-		return *res, fmt.Errorf("%s is running (pid %d); reloading it for the new schedule would stop it. Add --yes to go ahead", r.Label, st.PID)
+	if st.IsRunning() && !o.Yes {
+		return *res, &ConfirmError{NeedReloadRunning, fmt.Sprintf("%s is running (pid %d); reloading it for the new schedule would stop it. Add --yes to go ahead", r.Label, st.PID)}
 	}
 
 	bpath, err := launchd.SaveBackup(env.Home, r.Label, backupSuffix, env.Clock(), orig)
@@ -144,14 +151,22 @@ func apply(env sys.Env, r Routine, orig, updated []byte, want schedule.Spec, res
 
 	// confirm
 	if res.Reloaded {
+		// A real one-second deadline (not a count of sleeps), and ctx can cut it short. The change
+		// itself is never interrupted halfway: only this confirmation wait is.
 		var last launchd.Status
-		for i := 0; i < 10; i++ {
+		deadline := time.Now().Add(time.Second)
+		for {
 			last = launchd.Query(env.Runner, env.UID, r.Label)
 			if last.Loaded && last.RunInterval == want.Interval && schedule.SameCalendars(last.Calendars, want.Calendars) {
 				res.Verified = "launchd now holds " + res.After
 				return *res, nil
 			}
-			time.Sleep(100 * time.Millisecond)
+			if !time.Now().Before(deadline) {
+				break
+			}
+			if !sleep(ctx, 100*time.Millisecond) {
+				return *res, fmt.Errorf("interrupted before launchd confirmed the new schedule (the change was made; backup at %s); check with: rtm show %s", bpath, r.Label)
+			}
 		}
 		return *res, fmt.Errorf("reloaded, but launchctl print does not show the new schedule (loaded=%v, interval=%d, %d calendar entries); "+
 			"backup at %s, undo with: rtm schedule %s --revert", last.Loaded, last.RunInterval, len(last.Calendars), bpath, r.Label)

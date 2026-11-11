@@ -87,18 +87,96 @@ func TestWritePlistIsAtomicAndKeepsMode(t *testing.T) {
 	}
 }
 
+func plistWithLabel(label string) []byte {
+	return []byte(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>` + label + `</string></dict></plist>`)
+}
+
 func TestWritePlistGuard(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "ai.hermes.gateway.plist")
-	os.WriteFile(p, []byte("keep"), 0o644)
+	dir := t.TempDir()
 	t.Setenv(GuardEnv, "1")
-	if err := WritePlist("ai.hermes.gateway", p, []byte("clobber")); err == nil || !strings.Contains(err.Error(), "refusing") {
+
+	// 1) the label argument is not a test label
+	real := filepath.Join(dir, "ai.hermes.gateway.plist")
+	os.WriteFile(real, plistWithLabel("ai.hermes.gateway"), 0o644)
+	if err := WritePlist("ai.hermes.gateway", real, plistWithLabel("ai.hermes.gateway")); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Fatalf("err = %v", err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != "keep" {
+
+	// 2) a test label as the argument, but the file being replaced is a real job's plist
+	if err := WritePlist("dev.rtm.test.safe", real, plistWithLabel("dev.rtm.test.safe")); err == nil || !strings.Contains(err.Error(), `has Label "ai.hermes.gateway"`) {
+		t.Fatalf("a real plist must not be overwritten through a test label: %v", err)
+	}
+	if b, _ := os.ReadFile(real); string(b) != string(plistWithLabel("ai.hermes.gateway")) {
 		t.Errorf("a refused write must not touch the file: %q", b)
 	}
-	if err := WritePlist("dev.rtm.test.ok", p, []byte("fine")); err != nil {
-		t.Errorf("test labels must pass: %v", err)
+
+	// 3) the file is a test plist but the new content would make it a real job
+	mine := filepath.Join(dir, "dev.rtm.test.a.plist")
+	os.WriteFile(mine, plistWithLabel("dev.rtm.test.a"), 0o644)
+	if err := WritePlist("dev.rtm.test.a", mine, plistWithLabel("ai.hermes.gateway")); err == nil || !strings.Contains(err.Error(), "does not have Label") {
+		t.Fatalf("content with another Label must be refused: %v", err)
+	}
+	if err := WritePlist("dev.rtm.test.a", mine, []byte("junk")); err == nil {
+		t.Fatal("content that is not a plist must be refused")
+	}
+	if b, _ := os.ReadFile(mine); string(b) != string(plistWithLabel("dev.rtm.test.a")) {
+		t.Error("refused writes must not touch the file")
+	}
+
+	// 4) the normal case: test label, test file, test content; and creating a new test plist
+	if err := WritePlist("dev.rtm.test.a", mine, plistWithLabel("dev.rtm.test.a")); err != nil {
+		t.Errorf("test plist must pass: %v", err)
+	}
+	fresh := filepath.Join(dir, "dev.rtm.test.new.plist")
+	if err := WritePlist("dev.rtm.test.new", fresh, plistWithLabel("dev.rtm.test.new")); err != nil {
+		t.Errorf("creating a test plist must pass: %v", err)
+	}
+
+	// 5) an unparsable existing file is refused (cannot prove it is a test plist)
+	broken := filepath.Join(dir, "dev.rtm.test.broken.plist")
+	os.WriteFile(broken, []byte("junk"), 0o644)
+	if err := WritePlist("dev.rtm.test.broken", broken, plistWithLabel("dev.rtm.test.broken")); err == nil {
+		t.Error("an existing file that does not parse must be refused under the guard")
+	}
+}
+
+// Codex P0: the guard looked only at the label argument, so a test label could be used to
+// bootstrap any plist file.
+func TestBootstrapGuardReadsThePlistFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(GuardEnv, "1")
+	mk := func(name string, content []byte) string {
+		p := filepath.Join(dir, name)
+		if content != nil {
+			os.WriteFile(p, content, 0o644)
+		}
+		return p
+	}
+	good := mk("dev.rtm.test.safe.plist", plistWithLabel("dev.rtm.test.safe"))
+	fr := &sys.FakeRunner{Results: map[string]sys.Result{"launchctl bootstrap gui/501 " + good: {}}}
+
+	for name, path := range map[string]string{
+		"file is a real job":          mk("real.plist", plistWithLabel("ai.hermes.gateway")),
+		"file has another test label": mk("other.plist", plistWithLabel("dev.rtm.test.other")),
+		"file is not a plist":         mk("junk.plist", []byte("junk")),
+		"file is missing":             mk("missing.plist", nil),
+	} {
+		if err := Bootstrap(fr, 501, "dev.rtm.test.safe", path); err == nil || !strings.Contains(err.Error(), "refusing") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	if len(fr.Calls) != 0 {
+		t.Fatalf("refused bootstraps reached the runner: %v", fr.Calls)
+	}
+	if err := Bootstrap(fr, 501, "dev.rtm.test.safe", good); err != nil {
+		t.Errorf("the matching test plist must pass: %v", err)
+	}
+
+	// the guard off: the product bootstraps whatever it is told to
+	t.Setenv(GuardEnv, "")
+	fr2 := &sys.FakeRunner{Results: map[string]sys.Result{"launchctl bootstrap gui/501 /x/real.plist": {}}}
+	if err := Bootstrap(fr2, 501, "ai.hermes.gateway", "/x/real.plist"); err != nil {
+		t.Errorf("guard off: %v", err)
 	}
 }
 

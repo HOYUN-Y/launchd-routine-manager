@@ -2,6 +2,7 @@ package routine
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -16,9 +17,12 @@ import (
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/launchd"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/testutil"
 )
 
 const schedLabel = "dev.rtm.test.sched"
+
+var ctx0 = context.Background()
 
 // plist with an interval schedule and keys that must survive any schedule change
 const schedPlist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -139,7 +143,7 @@ func decodeMap(t *testing.T, b []byte) map[string]any {
 
 func TestSetScheduleReloadsAndVerifies(t *testing.T) {
 	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 0, cal0515))
-	res, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +185,7 @@ func TestSetScheduleReloadsAndVerifies(t *testing.T) {
 
 func TestSetScheduleOnJobThatIsNotLoaded(t *testing.T) {
 	f := newSched(t, schedPlist, notLoadedS)
-	res, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +202,7 @@ func TestSetScheduleOnJobThatIsNotLoaded(t *testing.T) {
 
 func TestSetScheduleRunningNeedsYes(t *testing.T) {
 	f := newSched(t, schedPlist, loaded("running", 99, 3600))
-	_, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	_, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "--yes") || !strings.Contains(err.Error(), "pid 99") {
 		t.Fatalf("err = %v", err)
 	}
@@ -211,7 +215,7 @@ func TestSetScheduleRunningNeedsYes(t *testing.T) {
 	}
 
 	f = newSched(t, schedPlist, loaded("running", 99, 3600), loaded("not running", 0, 0, cal0515))
-	if _, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true}); err != nil {
+	if _, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(f.calls(), "bootout") {
@@ -222,7 +226,7 @@ func TestSetScheduleRunningNeedsYes(t *testing.T) {
 // A process that is still starting has a pid but is not yet "running"; it must count as running.
 func TestSetScheduleTreatsPidAsRunning(t *testing.T) {
 	f := newSched(t, schedPlist, loaded("xpcproxy", 4450, 3600))
-	if _, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); err == nil {
+	if _, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); err == nil {
 		t.Fatal("a job with a live process must need --yes")
 	}
 }
@@ -231,7 +235,7 @@ func TestSetScheduleInexpressibleNeedsForce(t *testing.T) {
 	yearly := strings.Replace(schedPlist, "<key>StartInterval</key><integer>3600</integer>",
 		"<key>StartCalendarInterval</key><dict><key>Month</key><integer>3</integer><key>Day</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>", 1)
 	f := newSched(t, yearly, notLoadedS)
-	_, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	_, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "--force") || !strings.Contains(err.Error(), "month=3 day=5 07:00") {
 		t.Fatalf("err = %v (it must show the original schedule)", err)
 	}
@@ -241,7 +245,7 @@ func TestSetScheduleInexpressibleNeedsForce(t *testing.T) {
 	f.noBackupDir(t)
 
 	f = newSched(t, yearly, notLoadedS)
-	res, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{Force: true})
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{Force: true})
 	if err != nil || res.Before != "month=3 day=5 07:00" {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -253,7 +257,7 @@ func TestSetScheduleInexpressibleNeedsForce(t *testing.T) {
 func TestSetScheduleSameScheduleDoesNothing(t *testing.T) {
 	f := newSched(t, schedPlist)
 	every, _ := schedule.Every("1h")
-	res, err := SetSchedule(f.env, f.r, every, SchedOpts{})
+	res, err := SetSchedule(ctx0, f.env, f.r, every, SchedOpts{})
 	if err != nil || !res.Unchanged {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -266,7 +270,7 @@ func TestSetScheduleSameScheduleDoesNothing(t *testing.T) {
 func TestSetScheduleLintFailureRestoresTheFile(t *testing.T) {
 	f := newSched(t, schedPlist, loaded("not running", 0, 3600))
 	f.fr.Results["plutil -lint "+f.path] = sys.Result{Err: errors.New("syntax error")}
-	res, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "plutil -lint rejected") || !strings.Contains(err.Error(), "restored") {
 		t.Fatalf("err = %v", err)
 	}
@@ -284,7 +288,7 @@ func TestSetScheduleLintFailureRestoresTheFile(t *testing.T) {
 func TestSetScheduleBootoutFailureRestoresTheFile(t *testing.T) {
 	f := newSched(t, schedPlist, loaded("not running", 0, 3600))
 	f.fr.Results["launchctl bootout gui/501/"+schedLabel] = sys.Result{Err: errors.New("Operation not permitted")}
-	_, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	_, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "old schedule") {
 		t.Fatalf("err = %v", err)
 	}
@@ -299,7 +303,7 @@ func TestSetScheduleBootstrapFailureLoadsTheOldPlistAgain(t *testing.T) {
 	key := "launchctl bootstrap gui/501 " + f.path
 	delete(f.fr.Results, key)
 	f.fr.Queue[key] = []sys.Result{{Err: errors.New("Bootstrap failed: 5")}, {}}
-	_, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	_, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "restored and loaded again") {
 		t.Fatalf("err = %v", err)
 	}
@@ -314,7 +318,7 @@ func TestSetScheduleBootstrapFailureLoadsTheOldPlistAgain(t *testing.T) {
 	f = newSched(t, schedPlist, loaded("not running", 0, 3600))
 	delete(f.fr.Results, "launchctl bootstrap gui/501 "+f.path)
 	f.fr.Queue["launchctl bootstrap gui/501 "+f.path] = []sys.Result{{Err: errors.New("x")}, {Err: errors.New("y")}}
-	_, err = SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	_, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "NOT loaded") {
 		t.Fatalf("err = %v", err)
 	}
@@ -324,7 +328,7 @@ func TestSetScheduleReportsWhenLaunchdDoesNotShowTheChange(t *testing.T) {
 	stale := loaded("not running", 0, 3600) // launchd still holds the old interval
 	f := newSched(t, schedPlist, stale)
 	f.fr.Results["launchctl print gui/501/"+schedLabel] = stale
-	res, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "does not show the new schedule") || !strings.Contains(err.Error(), "--revert") {
 		t.Fatalf("err = %v", err)
 	}
@@ -336,7 +340,7 @@ func TestSetScheduleReportsWhenLaunchdDoesNotShowTheChange(t *testing.T) {
 func TestSetScheduleNotesRunAtLoad(t *testing.T) {
 	withRAL := strings.Replace(schedPlist, "<key>ThrottleInterval", "<key>RunAtLoad</key><true/><key>ThrottleInterval", 1)
 	f := newSched(t, withRAL, loaded("not running", 0, 3600), loaded("not running", 0, 0, cal0515))
-	res, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err != nil || len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "RunAtLoad") {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -350,7 +354,7 @@ func TestSetScheduleRefusals(t *testing.T) {
 	check := func(name string, f *sfix, r Routine, wantErr string) {
 		t.Helper()
 		before, _ := os.ReadFile(r.Path)
-		_, err := SetSchedule(f.env, r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true, Force: true})
+		_, err := SetSchedule(ctx0, f.env, r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true, Force: true})
 		if err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("%s: err = %v, want %q", name, err, wantErr)
 		}
@@ -398,7 +402,7 @@ func TestSetScheduleDevGuard(t *testing.T) {
 	r := f.r
 	r.Label = "ai.hermes.gateway" // the guard looks at the label; the file stays as it is
 	t.Setenv("RTM_TEST_LABELS_ONLY", "1")
-	_, err := SetSchedule(f.env, r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true, Force: true})
+	_, err := SetSchedule(ctx0, f.env, r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true, Force: true})
 	if err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Fatalf("err = %v", err)
 	}
@@ -406,7 +410,7 @@ func TestSetScheduleDevGuard(t *testing.T) {
 	if len(f.fr.Calls) > 1 {
 		t.Errorf("commands ran: %v", f.fr.Calls[1:])
 	}
-	if _, err := RevertSchedule(f.env, r, SchedOpts{}); err == nil || !strings.Contains(err.Error(), "refusing") {
+	if _, err := RevertSchedule(ctx0, f.env, r, SchedOpts{}); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Errorf("revert must be guarded too: %v", err)
 	}
 }
@@ -415,7 +419,7 @@ func TestBinaryPlistStaysBinary(t *testing.T) {
 	m := decodeMap(t, []byte(schedPlist))
 	bin, _ := plist.Marshal(m, plist.BinaryFormat)
 	f := newSched(t, string(bin), notLoadedS)
-	if _, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); err != nil {
+	if _, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.HasPrefix(f.file(t), []byte("bplist00")) {
@@ -425,21 +429,21 @@ func TestBinaryPlistStaysBinary(t *testing.T) {
 
 func TestRevertWalksBackOneStepAndKeepsTheReplacedFile(t *testing.T) {
 	f := newSched(t, schedPlist, notLoadedS, notLoadedS, notLoadedS, notLoadedS)
-	if _, err := SetSchedule(f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); err != nil {
+	if _, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	afterDaily := string(f.file(t))
 	rs, _ := Discover(f.env, nil)
 	r, _ := Find(rs, schedLabel)
 	weekly, _ := schedule.Weekly("mon,wed", "06:30")
-	if _, err := SetSchedule(f.env, r, weekly, SchedOpts{}); err != nil { // same second: backup gets a -1 suffix
+	if _, err := SetSchedule(ctx0, f.env, r, weekly, SchedOpts{}); err != nil { // same second: backup gets a -1 suffix
 		t.Fatal(err)
 	}
 	afterWeekly := string(f.file(t))
 
 	rs, _ = Discover(f.env, nil)
 	r, _ = Find(rs, schedLabel)
-	res, err := RevertSchedule(f.env, r, SchedOpts{})
+	res, err := RevertSchedule(ctx0, f.env, r, SchedOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,20 +463,20 @@ func TestRevertWalksBackOneStepAndKeepsTheReplacedFile(t *testing.T) {
 	// a second revert finds the same backup and the file already equals it
 	rs, _ = Discover(f.env, nil)
 	r, _ = Find(rs, schedLabel)
-	if again, err := RevertSchedule(f.env, r, SchedOpts{}); err != nil || !again.Unchanged {
+	if again, err := RevertSchedule(ctx0, f.env, r, SchedOpts{}); err != nil || !again.Unchanged {
 		t.Errorf("second revert: %+v %v", again, err)
 	}
 }
 
 func TestRevertWithoutBackupAndWhenRunning(t *testing.T) {
 	f := newSched(t, schedPlist)
-	if _, err := RevertSchedule(f.env, f.r, SchedOpts{}); err == nil || !strings.Contains(err.Error(), "no backup") {
+	if _, err := RevertSchedule(ctx0, f.env, f.r, SchedOpts{}); err == nil || !strings.Contains(err.Error(), "no backup") {
 		t.Errorf("err = %v", err)
 	}
 
 	f = newSched(t, schedPlist, loaded("running", 7, 3600))
 	launchd.SaveBackup(f.env.Home, schedLabel, "", f.env.Clock().Add(-time.Hour), []byte(strings.Replace(schedPlist, "3600", "900", 1)))
-	if _, err := RevertSchedule(f.env, f.r, SchedOpts{}); err == nil || !strings.Contains(err.Error(), "--yes") {
+	if _, err := RevertSchedule(ctx0, f.env, f.r, SchedOpts{}); err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Errorf("revert of a running job needs --yes: %v", err)
 	}
 	if string(f.file(t)) != schedPlist {
@@ -483,8 +487,90 @@ func TestRevertWithoutBackupAndWhenRunning(t *testing.T) {
 func TestRevertReloadsAndVerifies(t *testing.T) {
 	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 900))
 	launchd.SaveBackup(f.env.Home, schedLabel, "", f.env.Clock().Add(-time.Hour), []byte(strings.Replace(schedPlist, "3600", "900", 1)))
-	res, err := RevertSchedule(f.env, f.r, SchedOpts{})
+	res, err := RevertSchedule(ctx0, f.env, f.r, SchedOpts{})
 	if err != nil || !res.Reloaded || res.After != "every 15m" || !strings.Contains(res.Verified, "every 15m") {
 		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+func TestScheduleConfirmErrors(t *testing.T) {
+	var ce *ConfirmError
+	f := newSched(t, schedPlist, loaded("running", 99, 3600))
+	_, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if !errors.As(err, &ce) || ce.Need != NeedReloadRunning {
+		t.Fatalf("err = %#v", err)
+	}
+	var o SchedOpts
+	ce.GrantSched(&o)
+	if !o.Yes || o.Force {
+		t.Errorf("granting reload-running: %+v", o)
+	}
+
+	yearly := strings.Replace(schedPlist, "<key>StartInterval</key><integer>3600</integer>",
+		"<key>StartCalendarInterval</key><dict><key>Month</key><integer>3</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>", 1)
+	f = newSched(t, yearly, notLoadedS)
+	_, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if !errors.As(err, &ce) || ce.Need != NeedForce {
+		t.Fatalf("err = %#v", err)
+	}
+	o = SchedOpts{}
+	ce.GrantSched(&o)
+	if !o.Force || o.Yes {
+		t.Errorf("granting force: %+v", o)
+	}
+}
+
+// run and schedule decide "is it running" the same way: a starting job (xpcproxy + pid) counts.
+func TestScheduleAndRunAgreeOnRunning(t *testing.T) {
+	for _, st := range []sys.Result{loaded("running", 9, 3600), loaded("xpcproxy", 4450, 3600)} {
+		f := newSched(t, schedPlist, st)
+		if _, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); err == nil {
+			t.Errorf("a job with a live process must need --yes: %s", st.Out)
+		}
+	}
+}
+
+func TestScheduleConfirmationWaitIsCancellable(t *testing.T) {
+	stale := loaded("not running", 0, 3600) // launchd never shows the new schedule
+	f := newSched(t, schedPlist, stale)
+	f.fr.Results["launchctl print gui/501/"+schedLabel] = stale
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(150 * time.Millisecond); cancel() }()
+	start := time.Now()
+	res, err := SetSchedule(ctx, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if err == nil || !strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "the change was made") {
+		t.Fatalf("err = %v", err)
+	}
+	if time.Since(start) > 800*time.Millisecond {
+		t.Errorf("took %v: cancelling must cut the 1s confirmation wait short", time.Since(start))
+	}
+	if res.BackupPath == "" || !strings.Contains(string(f.file(t)), "StartCalendarInterval") {
+		t.Error("an interrupted confirmation does not undo the change; the backup path must be reported")
+	}
+}
+
+func TestScheduleDoesNothingWhenAlreadyCancelled(t *testing.T) {
+	f := newSched(t, schedPlist, loaded("not running", 0, 3600))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := SetSchedule(ctx, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if string(f.file(t)) != schedPlist {
+		t.Error("plist must be untouched")
+	}
+	f.noBackupDir(t)
+}
+
+func TestCronEvidenceHasTheCrontabLine(t *testing.T) {
+	e, _ := env(t, sys.Result{Out: testutil.Crontab(t)})
+	rs, _ := Discover(e, nil)
+	c, _ := Find(rs, "cron:0ec33761")
+	if ev := c.Evidence[0]; ev.File != "crontab" || ev.Line != c.Line || ev.Line != 4 {
+		t.Errorf("cron evidence = %+v, want line %d", ev, c.Line)
+	}
+	p, _ := Find(rs, "dev.rtm.test.claude-direct")
+	if p.Evidence[0].Line != 0 || p.Evidence[0].File != p.Path {
+		t.Errorf("plist evidence needs only the path: %+v", p.Evidence[0])
 	}
 }
