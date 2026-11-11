@@ -95,3 +95,33 @@ func TestPaintFillsEveryLineWithTheGround(t *testing.T) {
 		t.Errorf("without colours the screen must be unchanged, got %q", got)
 	}
 }
+
+func TestClearsBackground(t *testing.T) {
+	for params, want := range map[string]bool{
+		"": true, "0": true, "49": true, "1;0": true, "0;1": true, ";1": true,
+		"1": false, "38;5;0": false, "38;2;0;0;0": false, "48;5;1": false, "0;48;5;1": false,
+		"38;5;0;49": true, "39": false,
+	} {
+		if got := clearsBackground(params); got != want {
+			t.Errorf("clearsBackground(%q) = %v, want %v", params, got, want)
+		}
+	}
+}
+
+func TestPaintRestoresTheGroundAfterEveryResetForm(t *testing.T) {
+	defer lipgloss.SetColorProfile(lipgloss.ColorProfile())
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	seq := ground()
+	for _, in := range []string{"앞\x1b[m뒤", "앞\x1b[49m뒤", "앞\x1b[0m뒤", "앞\x1b[1;0m뒤"} {
+		out := Paint(in, 10)
+		if !strings.Contains(out, "m"+seq+"뒤") {
+			t.Errorf("Paint(%q): the ground is not set again before the text after the reset: %q", in, out)
+		}
+		if w := lipgloss.Width(out); w != 10 {
+			t.Errorf("Paint(%q) is %d columns, want 10", in, w)
+		}
+	}
+	if out := Paint("a\x1b[38;5;0mb", 10); strings.Contains(out, "\x1b[38;5;0m"+seq) {
+		t.Errorf("a colour index 0 is not a reset: %q", out)
+	}
+}
