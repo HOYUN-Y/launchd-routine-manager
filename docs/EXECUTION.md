@@ -175,3 +175,11 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 | 2026-11-12 | 스킬 재검수 3건 해결, 잔여 없음. M5-fix a54e769(view.go 상태줄 문구 3줄 추가 보고됨). style/tui(478be89) 병합 → 971f4f6. 감독 확인: gofmt/vet, -race, RTM_INTEGRATION=1 통과, 실제 plist 불변, 흔적 0. Codex에 M5 재검수(마지막) 지시 |
 | 2026-11-12 | Codex M5 재검수: 4건+실행기 제한 시간 해결, 새 P1 1건(종료 보류 중 일정 변경·복원 실패가 안내 없이 종료 코드 0). 감독 수용, M5-fix2 지시. ctx 16% |
 | 2026-11-12 | M5-fix2 9c1356f. 감독 확인 통과. Codex 재검수: 감싼 ConfirmError(원복 실패) 경로가 여전히 종료 코드 0(P1). 결정: 종료 보류 중 오류는 종류와 무관하게 모두 보존(가장 작은 수정). M5-fix3 지시 |
+| 2026-11-12 | Codex M5-fix3 재검수: 해결, 잔여 지적 없음. impl/rtm을 main에 병합(a51122a). main에서 감독 확인: gofmt/vet, -race, RTM_INTEGRATION=1 통과, 실제 plist 불변, 흔적 0, rtm doctor 정상. style/tui worktree·브랜치 정리(병합 완료) |
+
+## 12. 1차 결과 요약
+
+- 완료: M1~M5(CLI `list`·`show`·`logs`·`run`·`schedule`·`track`·`doctor`, TUI), 마일스톤별 Codex 검수와 수정(지적 P0 7건·P1 21건 수정, 거부 1건), TUI 미감(terminal 테마), 루틴 생성 스킬 초안(검수 통과)
+- 남은 한계(코드에 shortcut 주석): 확인→쓰기 사이 링크 교체, 재조회→bootout 사이 밀리초 경쟁, 외부 명령은 호출별 취소 없이 고정 15초 제한, 프로세스 간 config 잠금 없음, DST로 없는 시각은 건너뜀(launchd 실제 동작 미확인), `..`를 포함한 Label은 일정 변경 거부
+- 사용자 확인 필요: 원격 push, 스킬 설치(`~/.claude/skills`·`~/.codex/skills` 링크), `rtm` 설치 위치(`go install` 또는 PATH), 미해결 질문(12장 1·2·3·5·6)
+- 다음 차수 후보: M6 배포(Homebrew tap·Releases), M7 이력 수집기·실패 알림, 정밀 추적
