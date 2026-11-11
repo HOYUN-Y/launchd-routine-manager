@@ -84,10 +84,17 @@ type Model struct {
 	vp      viewport.Model
 	logsFor routine.Routine
 	follow  bool
+	// Generations: a late message from an old request must not act on the current screen.
+	logsGen   int  // bumped when a log view is requested or left
+	followGen int  // bumped when following is switched on or off, so an old tick chain dies
+	tracking  bool // a track/untrack is in flight: config.json is read-modify-written, one at a time
 
 	dlg  *pending
 	work *working
 	quit bool
+	// quitAfter: ctrl+c arrived while a schedule change was in flight. Quitting now could leave the
+	// job booted out; rtm quits when the backend (restore included) has finished.
+	quitAfter bool
 }
 
 func New(ctx context.Context, be Backend) *Model {
@@ -123,6 +130,7 @@ type schedDoneMsg struct {
 	err error
 }
 type logsMsg struct {
+	gen  int
 	r    routine.Routine
 	text string
 	err  error
@@ -134,7 +142,7 @@ type trackMsg struct {
 	err     error
 }
 type tickMsg struct{}
-type followMsg struct{}
+type followMsg struct{ gen int }
 
 // ---- commands
 
@@ -179,10 +187,24 @@ func (m *Model) startSched(p pending) tea.Cmd {
 }
 
 func (m *Model) fetchLogs(r routine.Routine) tea.Cmd {
+	gen := m.logsGen
 	return func() tea.Msg {
 		text, err := m.be.Logs(r, logLines)
-		return logsMsg{r, text, err}
+		return logsMsg{gen, r, text, err}
 	}
+}
+
+func (m *Model) followTick() tea.Cmd {
+	gen := m.followGen
+	return tea.Tick(m.followEvery(), func(time.Time) tea.Msg { return followMsg{gen} })
+}
+
+// leaveLogs closes the log view and invalidates whatever is still in flight for it.
+func (m *Model) leaveLogs() {
+	m.follow = false
+	m.followGen++
+	m.logsGen++
+	m.screen = m.logsFrom
 }
 
 // ---- state helpers
@@ -276,6 +298,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.schedDone(msg)
 
 	case logsMsg:
+		if msg.gen != m.logsGen {
+			return m, nil // an old request: the view was left or another one was asked for
+		}
+		if m.screen != scLogs && (m.screen != m.logsFrom || m.work != nil || m.dlg != nil) {
+			return m, nil // opening the view, but the user has moved on meanwhile
+		}
 		if msg.err != nil {
 			m.setStatus(msg.err.Error(), true)
 			m.follow = false
@@ -291,12 +319,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case followMsg:
-		if m.follow && m.screen == scLogs {
-			return m, tea.Batch(m.fetchLogs(m.logsFor), tea.Tick(m.followEvery(), func(time.Time) tea.Msg { return followMsg{} }))
+		if msg.gen == m.followGen && m.follow && m.screen == scLogs {
+			return m, tea.Batch(m.fetchLogs(m.logsFor), m.followTick())
 		}
 		return m, nil
 
 	case trackMsg:
+		m.tracking = false
+		if msg.err == nil {
+			for i := range m.all { // the reload below is async; until then the row must not look stale
+				if m.all[i].Label == msg.label {
+					m.all[i].Tracked = msg.tracked
+				}
+			}
+		}
 		switch {
 		case msg.err != nil:
 			m.setStatus(msg.err.Error(), true)
@@ -351,6 +387,10 @@ func (m *Model) runDone(msg runDoneMsg) (tea.Model, tea.Cmd) {
 func (m *Model) schedDone(msg schedDoneMsg) (tea.Model, tea.Cmd) {
 	m.cancelWork()
 	m.work = nil
+	if m.quitAfter { // the user asked to quit while this ran; the backend has ended, so quit
+		m.quit = true
+		return m, tea.Quit
+	}
 	var ce *routine.ConfirmError
 	switch {
 	case errors.As(msg.err, &ce):
@@ -378,6 +418,10 @@ func secs(d time.Duration) string { return fmt.Sprint(int(d / time.Second)) }
 func (m *Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := k.String()
 	if s == "ctrl+c" {
+		if m.work != nil && m.work.kind == "sched" {
+			m.quitAfter = true // do not cancel: let the change finish or restore, then quit
+			return m, nil
+		}
 		m.cancelWork()
 		m.quit = true
 		return m, tea.Quit
@@ -515,8 +559,14 @@ func (m *Model) keyList(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case "l":
 		m.logsFrom = m.screen
+		m.logsGen++
 		return m, m.fetchLogs(r)
 	case "t":
+		if m.tracking {
+			m.setStatus("추적 변경이 아직 끝나지 않았습니다. 잠시 뒤에 다시 누르세요", false)
+			return m, nil
+		}
+		m.tracking = true
 		return m, func() tea.Msg {
 			var changed bool
 			var err error
@@ -563,13 +613,13 @@ func (m *Model) keyLogs(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quit = true
 		return m, tea.Quit
 	case "esc", "backspace":
-		m.follow = false
-		m.screen = m.logsFrom
+		m.leaveLogs()
 		return m, nil
 	case "f":
 		m.follow = !m.follow
+		m.followGen++
 		if m.follow {
-			return m, tea.Tick(m.followEvery(), func(time.Time) tea.Msg { return followMsg{} })
+			return m, m.followTick()
 		}
 		return m, nil
 	}

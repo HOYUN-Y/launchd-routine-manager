@@ -140,3 +140,44 @@ func TestBlankFileAndNullTracked(t *testing.T) {
 		}
 	}
 }
+
+// M5 review P0: the temp file used to have a fixed name, so a link planted there was written
+// through, and concurrent writers shared one file.
+func TestWriteDoesNotFollowASymlinkAtTheOldTempName(t *testing.T) {
+	p := write(t, `{"tracked":["a"]}`)
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, p+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Track(p, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "precious" {
+		t.Fatalf("the link target was overwritten: %q", got)
+	}
+	if got, _ := Load(p); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("tracked = %v", got)
+	}
+	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v", fi.Mode().Perm())
+	}
+}
+
+func TestFailedWriteLeavesNoTempFile(t *testing.T) {
+	p := write(t, "")
+	if err := os.MkdirAll(p, 0o755); err != nil { // config.json is a directory: the rename fails
+		t.Fatal(err)
+	}
+	if err := writeAtomic(p, []byte("{}")); err == nil {
+		t.Fatal("expected an error")
+	}
+	entries, _ := os.ReadDir(filepath.Dir(p))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "rtm-tmp") {
+			t.Errorf("left behind: %s", e.Name())
+		}
+	}
+}

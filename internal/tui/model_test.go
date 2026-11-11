@@ -47,6 +47,10 @@ type fakeBE struct {
 	logsText string
 	logsErr  error
 	logsFor  []string
+
+	trackIn   chan struct{} // if set, Track reports each call here ...
+	trackGate chan struct{} // ... and then waits for this to be closed
+	schedCtx  context.Context
 }
 
 func (f *fakeBE) Load() ([]routine.Routine, []string) {
@@ -82,7 +86,10 @@ func (f *fakeBE) sched(c schedCall) (routine.SchedResult, error) {
 	return routine.SchedResult{Before: "every 1h", After: c.edit.Spec().Describe(), Reloaded: true, Verified: "ok"}, nil
 }
 
-func (f *fakeBE) SetSchedule(_ context.Context, r routine.Routine, e schedule.Edit, o routine.SchedOpts) (routine.SchedResult, error) {
+func (f *fakeBE) SetSchedule(ctx context.Context, r routine.Routine, e schedule.Edit, o routine.SchedOpts) (routine.SchedResult, error) {
+	f.mu.Lock()
+	f.schedCtx = ctx
+	f.mu.Unlock()
 	return f.sched(schedCall{"set", r.Label, e, o})
 }
 
@@ -92,6 +99,10 @@ func (f *fakeBE) RevertSchedule(_ context.Context, r routine.Routine, o routine.
 
 func (f *fakeBE) Track(l string) (bool, error) {
 	f.tracks = append(f.tracks, l)
+	if f.trackIn != nil {
+		f.trackIn <- struct{}{}
+		<-f.trackGate
+	}
 	return true, f.trackErr
 }
 func (f *fakeBE) Untrack(l string) (bool, error) {
@@ -560,7 +571,7 @@ func TestLogs(t *testing.T) {
 	}
 	// a follow tick fetches again
 	be.logsText += "\nnewest line"
-	_, tickCmd := m.Update(followMsg{}) // one follow tick: [fetch, next tick]; the tick re-arms by design
+	_, tickCmd := m.Update(followMsg{m.followGen}) // one follow tick: [fetch, next tick]; the tick re-arms by design
 	batch, ok := tickCmd().(tea.BatchMsg)
 	if !ok || len(batch) != 2 {
 		t.Fatalf("a follow tick must fetch and re-arm: %T", tickCmd())
@@ -791,5 +802,176 @@ func TestListScrollsToKeepTheCursorVisible(t *testing.T) {
 	press(m, "pgup")
 	if r, _ := m.selected(); r.Label != "job-34" {
 		t.Errorf("pgup moves a screen: %s", r.Label)
+	}
+}
+
+// ---- M5 review fixes
+
+// P0: config.json is read-modify-written, so a second t while one is in flight must not start.
+func TestTrackIsSerialized(t *testing.T) {
+	be := sample()
+	be.trackIn, be.trackGate = make(chan struct{}, 4), make(chan struct{})
+	m := newModel(be)
+	_, cmd := m.Update(key("t")) // alpha.ai
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	<-be.trackIn
+
+	_, c2 := m.Update(key("t")) // pressed again while the first is in flight
+	if c2 != nil {
+		t.Error("a second t must not start a backend call")
+	}
+	if !strings.Contains(view(m), "추적 변경이 아직 끝나지 않았습니다") {
+		t.Errorf("the user must be told:\n%s", view(m))
+	}
+	close(be.trackGate)
+	msg := <-done
+	if len(be.tracks) != 1 {
+		t.Fatalf("tracks = %v", be.tracks)
+	}
+	_, next := m.Update(msg)
+	if r, _ := m.selected(); !r.Tracked {
+		t.Error("the row must show the new state at once, before the reload")
+	}
+	be.rs[0].Tracked = true // what the reload will find
+	drain(m, next)
+	// after it ended, t works again, and now untracks (the row is tracked)
+	be.trackIn = nil
+	press(m, "t")
+	if len(be.untracks) != 1 {
+		t.Errorf("tracks=%v untracks=%v", be.tracks, be.untracks)
+	}
+}
+
+// P1: ctrl+c while a schedule change runs must not quit until the backend returns.
+func TestCtrlCDuringAScheduleChangeWaitsForTheBackend(t *testing.T) {
+	be := sample()
+	release, started := make(chan struct{}), make(chan struct{})
+	be.schedFn = func(schedCall) (routine.SchedResult, error) {
+		close(started)
+		<-release
+		return routine.SchedResult{Before: "a", After: "b"}, nil
+	}
+	m := newModel(be)
+	press(m, "e")
+	typeText(m, "daily 05:15")
+	_, cmd := m.Update(key("enter"))
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	<-started
+
+	_, quit := m.Update(key("ctrl+c"))
+	if quit != nil || m.quit {
+		t.Fatal("ctrl+c must not quit while the schedule change runs")
+	}
+	if !strings.Contains(view(m), "변경을 마무리하는 중… 끝나면 종료합니다") {
+		t.Errorf("status:\n%s", view(m))
+	}
+	be.mu.Lock()
+	ctx := be.schedCtx
+	be.mu.Unlock()
+	if ctx.Err() != nil {
+		t.Error("the backend's context must not be cancelled by ctrl+c")
+	}
+	press(m, "q", "esc") // other keys still do nothing special
+	if m.quit {
+		t.Fatal("q must not quit either")
+	}
+
+	close(release)
+	_, after := m.Update(<-done)
+	if after == nil {
+		t.Fatal("the model must quit once the backend returned")
+	}
+	if _, ok := after().(tea.QuitMsg); !ok || !m.quit {
+		t.Error("expected a quit")
+	}
+}
+
+// A confirmation (nothing changed) or a failure also ends the wait.
+func TestCtrlCDuringAScheduleChangeQuitsAfterAFailureToo(t *testing.T) {
+	m := newModel(sample())
+	m.work = &working{kind: "sched", label: "alpha.ai", cancel: func() {}}
+	m.Update(key("ctrl+c"))
+	_, cmd := m.Update(schedDoneMsg{p: pending{kind: "sched"}, err: errors.New("boom")})
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("expected quit")
+	}
+}
+
+// A wait for a run may still be abandoned at once: the job keeps running under launchd.
+func TestCtrlCDuringARunCancelsAndQuitsAtOnce(t *testing.T) {
+	m := newModel(sample())
+	cancelled := false
+	m.work = &working{kind: "run", label: "alpha.ai", cancel: func() { cancelled = true }}
+	_, cmd := m.Update(key("ctrl+c"))
+	if _, ok := cmd().(tea.QuitMsg); !ok || !cancelled || !m.quit {
+		t.Errorf("quit=%v cancelled=%v", m.quit, cancelled)
+	}
+}
+
+// P1: a log result that arrives late must not reopen a screen the user left, or replace another
+// routine's log.
+func TestLateLogsAreIgnored(t *testing.T) {
+	be := sample()
+	m := newModel(be)
+
+	// two requests: alpha then beta; beta's result arrives first, then alpha's
+	be.logsText = "alpha text"
+	_, ca := m.Update(key("l"))
+	press(m, "esc") // nothing to leave yet, still the list
+	press(m, "j")   // gamma.ai
+	be.logsText = "beta text"
+	_, cb := m.Update(key("l"))
+	m.Update(cb())
+	if m.screen != scLogs || m.logsFor.Label != "gamma.ai" {
+		t.Fatalf("screen=%v logsFor=%s", m.screen, m.logsFor.Label)
+	}
+	be.logsText = "alpha text"
+	m.Update(ca())
+	if m.logsFor.Label != "gamma.ai" || strings.Contains(view(m), "alpha text") {
+		t.Errorf("the old request overwrote the log:\n%s", view(m))
+	}
+
+	// leaving: a result in flight when the user pressed esc must not reopen the view
+	be.logsText = "x"
+	m.Update(key("f")) // not press: following never ends
+	_, fetch := m.Update(followMsg{m.followGen})
+	msgs := fetch().(tea.BatchMsg)
+	late := msgs[0]() // a fetch whose answer is still on its way
+	press(m, "esc")
+	if m.screen != scList {
+		t.Fatal("esc must leave")
+	}
+	m.Update(late)
+	if m.screen != scList {
+		t.Errorf("a late log result reopened the log screen: %v", m.screen)
+	}
+
+	// the user moved on to the form before the answer came
+	_, cl := m.Update(key("l"))
+	late = cl()
+	press(m, "e")
+	m.Update(late)
+	if m.screen != scForm {
+		t.Errorf("a late log result took over the form: %v", m.screen)
+	}
+}
+
+// P1: switching follow off and on must leave one tick chain, not two.
+func TestFollowToggleDoesNotMultiplyTickChains(t *testing.T) {
+	be := sample()
+	be.logsText = "line"
+	m := newModel(be)
+	press(m, "l")
+	_, c1 := m.Update(key("f")) // on: chain 1
+	m.Update(key("f"))          // off
+	_, c3 := m.Update(key("f")) // on: chain 3
+	old, cur := c1(), c3()
+	if _, cmd := m.Update(old); cmd != nil {
+		t.Error("the tick of the old chain must die")
+	}
+	if _, cmd := m.Update(cur); cmd == nil {
+		t.Error("the current chain must go on")
 	}
 }

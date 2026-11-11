@@ -299,6 +299,9 @@ func progressBar(done, total int) string {
 func (m *Model) viewStatus(w int) string {
 	if wk := m.work; wk != nil {
 		if wk.kind == "sched" {
+			if m.quitAfter {
+				return Styles.Notice.Render(Clip(" 변경을 마무리하는 중… 끝나면 종료합니다", w))
+			}
 			return Styles.Notice.Render(Clip(" "+wk.label+" 일정 변경 중…", w))
 		}
 		elapsed := time.Since(wk.started)

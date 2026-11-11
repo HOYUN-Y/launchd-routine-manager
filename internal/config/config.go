@@ -100,9 +100,30 @@ func edit(path string, f func([]string) []string) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
-		return false, err
+	return true, writeAtomic(path, append(data, '\n'))
+}
+
+// writeAtomic writes through a temp file created exclusively (random name, O_EXCL) next to path,
+// so a link planted at a guessable name is never followed and two writers never share one file.
+func writeAtomic(path string, data []byte) (err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".rtm-tmp-*")
+	if err != nil {
+		return err
 	}
-	return true, os.Rename(tmp, path)
+	tmp := f.Name()
+	defer func() {
+		if err != nil {
+			os.Remove(tmp)
+		}
+	}()
+	if _, err = f.Write(data); err == nil {
+		err = f.Chmod(0o644)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

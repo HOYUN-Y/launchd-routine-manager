@@ -3,6 +3,7 @@ package sys
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,14 +42,30 @@ func Real() (Env, error) {
 	return Env{Home: home, UID: os.Getuid(), SystemAgentsDir: "/Library/LaunchAgents", Runner: Exec{}}, nil
 }
 
-// Exec runs real commands.
-type Exec struct{}
+// DefaultTimeout bounds one external command. A hung launchctl must not freeze a screen.
+const DefaultTimeout = 15 * time.Second
 
-func (Exec) Run(name string, args ...string) (string, error) {
+// Exec runs real commands, each limited to Timeout (DefaultTimeout when zero).
+//
+// shortcut: a fixed time limit, no per-call cancellation. Esc and a wait deadline in the callers
+// are only noticed between commands. Add a ctx to Runner.Run if a command must be cancellable.
+type Exec struct{ Timeout time.Duration }
+
+func (e Exec) Run(name string, args ...string) (string, error) {
+	limit := e.Timeout
+	if limit == 0 {
+		limit = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd.WaitDelay = time.Second // a child that keeps the pipes open must not hold Wait past the kill
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("timed out after %s (%w)", limit, err)
+		}
 		return stdout.String(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
