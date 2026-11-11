@@ -42,6 +42,18 @@ claude --help    # 설치된 버전의 플래그 확인
 codex exec --help
 ```
 
+### 충돌 확인 (파일을 만들기 전에)
+
+스크립트와 plist를 쓰기 전에 아래 세 가지를 한꺼번에 확인한다. 하나라도 이미 있으면
+멈추고 사용자에게 묻는다. 기존 파일이나 심볼릭 링크를 사용자 확인 없이 교체하지 않는다.
+이미 등록된 루틴의 스크립트를 바꾸면 그 루틴의 동작이 바뀐다.
+
+```bash
+launchctl print gui/$(id -u)/<Label> >/dev/null 2>&1 && echo "Label 이미 로드됨"
+ls -l ~/Library/LaunchAgents/<Label>.plist             # 있으면 충돌
+ls -l ~/.local/share/routines/<이름>/run.sh            # 있으면 충돌
+```
+
 ## 3. 실행 스크립트 작성
 
 권장 위치: `~/.local/share/routines/<이름>/run.sh` (권한 `chmod +x`)
@@ -58,6 +70,9 @@ echo "=== start $(date '+%F %T')"
 
 # Codex 예:
 # /절대/경로/codex exec -s workspace-write "프롬프트"
+# 작업 폴더가 Git 저장소가 아니면 codex exec가 거부한다. 그 경우에만
+# --skip-git-repo-check를 추가한다(sandbox 설정은 그대로 둔다).
+# 확인: git -C "/작업/폴더" rev-parse --is-inside-work-tree
 
 echo "=== end $(date '+%F %T')"
 ```
@@ -127,7 +142,7 @@ tail -n 30 ~/Library/Logs/routines/<이름>.out.log ~/Library/Logs/routines/<이
 
 | 권장 사항 | 지키지 않으면 |
 |---|---|
-| plist를 `~/Library/LaunchAgents`에 둔다 | rtm 탐색에서 빠진다. `rtm track`으로 보완 |
+| plist를 `~/Library/LaunchAgents`에 둔다 | rtm 탐색에서 빠져 rtm으로 조회·실행·일정 변경을 할 수 없다. 사용자에게 알린다 |
 | `StandardOutPath`·`StandardErrorPath` 지정 | rtm에서 로그를 볼 수 없다. 상태·종료 코드는 보인다 |
 | `claude`·`codex` 절대경로 또는 PATH 지정 | 예약 실행이 `command not found`로 실패할 수 있다 |
 | 비대화형 권한 옵션 지정 | 루틴이 권한 확인에서 멈추거나 실패한다 |
