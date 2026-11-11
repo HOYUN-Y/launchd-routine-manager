@@ -81,7 +81,7 @@ func TestIntegrationRun(t *testing.T) {
 	})
 
 	t.Run("KeepAlive service: running refuses, restart needs --yes", func(t *testing.T) {
-		label := create(t, "keep", "exec /bin/sleep 311", "<key>KeepAlive</key><true/>\n")
+		label := create(t, "keep", it.Sleep(), "<key>KeepAlive</key><true/>\n")
 		code, out, errw := exec(t, env, "run", label, "--load", "--wait", "3s")
 		t.Logf("rtm run --load:\n%s%s", out, errw)
 		first := launchd.Query(env.Runner, env.UID, label)
@@ -219,7 +219,7 @@ func TestIntegrationSchedule(t *testing.T) {
 	})
 
 	t.Run("running job needs --yes", func(t *testing.T) {
-		label := it.Create(t, "schedrun", "exec /bin/sleep 311", "<key>KeepAlive</key><true/>\n")
+		label := it.Create(t, "schedrun", it.Sleep(), "<key>KeepAlive</key><true/>\n")
 		path := filepath.Join(it.Agents, label+".plist")
 		if code, out, errw := exec(t, env, "run", label, "--load", "--wait", "3s"); code != 0 {
 			t.Fatalf("run --load: code=%d\n%s%s", code, out, errw)

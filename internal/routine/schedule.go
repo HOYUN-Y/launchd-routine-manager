@@ -179,6 +179,10 @@ func apply(ctx context.Context, env sys.Env, r Routine, orig, updated []byte, wa
 	return *res, nil
 }
 
+// CanEditSchedule says whether SetSchedule may touch this routine at all (the refusals below),
+// so a UI can say no before it shows a form.
+func CanEditSchedule(env sys.Env, r Routine) error { return editable(env, r) }
+
 // editable refuses everything rtm must not write: system agents, crontab, plists outside
 // ~/Library/LaunchAgents, symlinks (a rename would replace the link), and, via the dev guard,
 // labels that are not test labels. It runs before anything is touched.

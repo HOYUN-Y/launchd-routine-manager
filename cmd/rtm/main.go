@@ -15,9 +15,12 @@ import (
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/routine"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/tui"
 )
 
-const usage = `usage: rtm <command>
+const usage = `usage: rtm [command]
+
+  (no command)                   open the TUI (needs a terminal)
 
   list [--all] [--json]          list AI routines (--all: every plist and crontab entry)
   show <label> [--json]          details: schedule, next run, state, logs, command
@@ -31,6 +34,11 @@ const usage = `usage: rtm <command>
   untrack <label>                undo track
   doctor [--json]                check claude/codex paths, LaunchAgents access, launchctl
 `
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
 
 func main() {
 	env, err := sys.Real()
@@ -47,7 +55,14 @@ func main() {
 
 func run(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) int {
 	if len(args) == 0 {
-		fmt.Fprint(errw, usage) // the TUI arrives in M5
+		if f, ok := out.(*os.File); ok && isTerminal(f) {
+			if err := tui.Run(ctx, env); err != nil {
+				fmt.Fprintln(errw, "rtm:", err)
+				return 1
+			}
+			return 0
+		}
+		fmt.Fprint(errw, usage) // not a terminal (a pipe, a test): nothing to draw on
 		return 2
 	}
 	var err error
@@ -77,19 +92,9 @@ func run(ctx context.Context, args []string, out, errw io.Writer, env sys.Env) i
 	return 0
 }
 
-// discover loads the tracked list and scans. Warnings (unreadable plists, a broken config,
-// crontab trouble) are returned, not printed: only `list` and `doctor` show them, so
-// `show` and `logs` stay quiet about unrelated files. A broken config.json is a warning here
-// (tracked items are treated as absent); `track` and `untrack` refuse to write it.
-func discover(env sys.Env) ([]routine.Routine, []string) {
-	tracked, err := config.Load(config.Path(env.Home))
-	var warns []string
-	if err != nil {
-		warns = append(warns, "config: "+err.Error())
-	}
-	rs, w := routine.Discover(env, tracked)
-	return rs, append(warns, w...)
-}
+// discover is routine.Load: warnings are returned, not printed. Only `list` and `doctor` show
+// them, so `show` and `logs` stay quiet about unrelated files.
+func discover(env sys.Env) ([]routine.Routine, []string) { return routine.Load(env) }
 
 // parse lets flags come before or after positional args: `rtm show <label> --json`.
 func parse(fs *flag.FlagSet, args []string) ([]string, error) {

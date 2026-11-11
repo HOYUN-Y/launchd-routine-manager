@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/launchd"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
@@ -25,6 +26,16 @@ type Env struct {
 	Agents string // ~/Library/LaunchAgents
 	Logs   string // temp dir for the jobs' stdout/stderr
 	labels []string
+	sleepN int
+}
+
+// Sleep returns a shell command that sleeps "forever" under a number unique to this test
+// process, so the leftover-process check cannot mistake another package's job for ours.
+func (e *Env) Sleep() string {
+	if e.sleepN == 0 {
+		e.sleepN = 100000 + os.Getpid()%100000
+	}
+	return fmt.Sprintf("exec /bin/sleep %d", e.sleepN)
 }
 
 // Read returns a job's log file (name is the part after dev.rtm.test., ext is out or err).
@@ -52,37 +63,51 @@ func New(t *testing.T) *Env {
 
 	backups := launchd.BackupDir(env.Home)
 	rtmDir := filepath.Dir(backups)
-	_, errB := os.Stat(backups)
-	_, errR := os.Stat(rtmDir)
-	madeBackupDir, madeRtmDir := errB != nil, errR != nil
 
-	// Registered first, so it runs last: nothing may be left behind.
+	// Registered first, so it runs last: nothing may be left behind. Everything here is scoped to
+	// the labels THIS test created: go test runs packages in parallel, and another package's
+	// integration test owns its own dev.rtm.test.* files at the same time.
 	t.Cleanup(func() {
-		mine, _ := filepath.Glob(filepath.Join(backups, launchd.TestPrefix+"*"))
-		for _, f := range mine {
-			os.Remove(f) // backups of our own test labels
+		for _, label := range it.labels {
+			mine, _ := filepath.Glob(filepath.Join(backups, label+"-*"))
+			for _, f := range mine {
+				os.Remove(f) // backups of our own test labels
+			}
 		}
-		if madeBackupDir {
-			os.Remove(backups) // only succeeds if empty
-		}
-		if madeRtmDir {
-			os.Remove(rtmDir)
-		}
+		// Empty directories hold nothing of anyone's: remove them (Remove fails if not empty, so
+		// another test's backups are safe). rtm recreates them on demand.
+		os.Remove(backups)
+		os.Remove(rtmDir)
+
 		for _, label := range it.labels {
 			if it.loaded(label) {
 				t.Errorf("%s is still loaded in launchd after the test", label)
 			}
+			for _, left := range []string{
+				filepath.Join(it.Agents, label+".plist"),
+				filepath.Join(it.Agents, "."+label+".plist.rtm-tmp"), // WritePlist temp file
+			} {
+				if _, err := os.Stat(left); err == nil {
+					t.Errorf("leftover test file: %s", left)
+				}
+			}
+			if left, _ := filepath.Glob(filepath.Join(backups, label+"-*")); len(left) != 0 {
+				t.Errorf("leftover test backups: %v", left)
+			}
 		}
-		left, _ := filepath.Glob(filepath.Join(it.Agents, launchd.TestPrefix+"*"))
-		hidden, _ := filepath.Glob(filepath.Join(it.Agents, ".dev.rtm.test.*")) // WritePlist temp files
-		if len(left)+len(hidden) != 0 {
-			t.Errorf("leftover test files in LaunchAgents: %v %v", left, hidden)
-		}
-		if out, _ := osexec.Command("pgrep", "-f", "sleep 311").Output(); len(out) != 0 {
-			t.Errorf("leftover test process (sleep 311): pid %s", strings.TrimSpace(string(out)))
-		}
-		if left, _ := filepath.Glob(filepath.Join(backups, launchd.TestPrefix+"*")); len(left) != 0 {
-			t.Errorf("leftover test backups: %v", left)
+		// bootout signals the job and returns; the process may need a moment to exit. Wait for it,
+		// but a process that is still there after 5 seconds is a real leftover.
+		if it.sleepN != 0 {
+			var pids string
+			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+				out, _ := osexec.Command("pgrep", "-f", fmt.Sprintf("sleep %d", it.sleepN)).Output()
+				if pids = strings.TrimSpace(string(out)); pids == "" || time.Now().After(deadline) {
+					break
+				}
+			}
+			if pids != "" {
+				t.Errorf("leftover test process (sleep %d) 5s after bootout: pid %s", it.sleepN, pids)
+			}
 		}
 	})
 	return it

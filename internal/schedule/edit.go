@@ -150,3 +150,46 @@ func SameCalendars(a, b []Calendar) bool {
 	sort.Strings(kb)
 	return strings.Join(ka, "|") == strings.Join(kb, "|")
 }
+
+// ParseText reads a schedule typed in one line, the way the TUI form takes it:
+//
+//	daily 09:00 | weekly mon,wed 09:00 | at 09:00,18:00 | every 30m | revert
+//
+// revert is reported separately (it restores the newest backup and has no Edit).
+func ParseText(s string) (e Edit, revert bool, err error) {
+	f := strings.Fields(s)
+	usage := fmt.Errorf("type: daily 09:00 | weekly mon,wed 09:00 | at 09:00,18:00 | every 30m | revert")
+	if len(f) == 0 {
+		return Edit{}, false, usage
+	}
+	switch strings.ToLower(f[0]) {
+	case "revert":
+		if len(f) != 1 {
+			return Edit{}, false, usage
+		}
+		return Edit{}, true, nil
+	case "daily":
+		if len(f) != 2 {
+			return Edit{}, false, usage
+		}
+		e, err = Daily(f[1])
+	case "at":
+		if len(f) != 2 {
+			return Edit{}, false, usage
+		}
+		e, err = At(f[1])
+	case "every":
+		if len(f) != 2 {
+			return Edit{}, false, usage
+		}
+		e, err = Every(f[1])
+	case "weekly":
+		if len(f) != 3 {
+			return Edit{}, false, usage
+		}
+		e, err = Weekly(f[1], f[2])
+	default:
+		return Edit{}, false, usage
+	}
+	return e, false, err
+}

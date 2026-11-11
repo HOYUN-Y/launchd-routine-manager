@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/classify"
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/config"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/cron"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/launchd"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/schedule"
@@ -54,6 +55,18 @@ type Routine struct {
 	StderrPath       string     `json:"stderr_path,omitempty"`
 
 	spec schedule.Spec
+}
+
+// Load is Discover with the tracked list read from config.json. A broken config is a warning
+// (tracked items are then treated as absent); `track` and `untrack` refuse to write it.
+func Load(env sys.Env) ([]Routine, []string) {
+	tracked, err := config.Load(config.Path(env.Home))
+	var warns []string
+	if err != nil {
+		warns = append(warns, "config: "+err.Error())
+	}
+	rs, w := Discover(env, tracked)
+	return rs, append(warns, w...)
 }
 
 // Discover scans everything and returns routines sorted by label, plus non-fatal warnings.

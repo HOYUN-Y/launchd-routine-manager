@@ -122,3 +122,28 @@ func TestSameCalendars(t *testing.T) {
 		t.Error("two empty lists are equal")
 	}
 }
+
+func TestParseText(t *testing.T) {
+	for in, want := range map[string]string{
+		"daily 09:00":          "daily 09:00",
+		"  Daily   9:05 ":      "daily 09:05",
+		"at 09:00,18:30":       "daily 09:00, daily 18:30",
+		"weekly mon,wed 09:00": "weekly mon 09:00, weekly wed 09:00",
+		"every 30m":            "every 30m",
+		"EVERY 2h":             "every 2h",
+	} {
+		e, rev, err := ParseText(in)
+		if err != nil || rev || e.Spec().Describe() != want {
+			t.Errorf("%q = %q rev=%v err=%v, want %q", in, e.Spec().Describe(), rev, err, want)
+		}
+	}
+	if _, rev, err := ParseText("revert"); err != nil || !rev {
+		t.Errorf("revert: %v %v", rev, err)
+	}
+	for _, bad := range []string{"", "   ", "daily", "daily 25:00", "daily 09:00 extra", "weekly mon", "weekly funday 09:00",
+		"every", "every 10s", "at", "at 09:00 18:00", "revert now", "sometimes 09:00", "09:00"} {
+		if _, rev, err := ParseText(bad); err == nil || rev {
+			t.Errorf("%q must be rejected (err=%v rev=%v)", bad, err, rev)
+		}
+	}
+}

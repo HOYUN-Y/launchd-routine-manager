@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/HOYUN-Y/launchd-routine-manager/internal/logs"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/routine"
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/sys"
 )
@@ -62,7 +63,7 @@ func cmdRun(ctx context.Context, args []string, out, errw io.Writer, env sys.Env
 		fmt.Fprintf(out, "finished: exit %d (runs %d)\n", *st.LastExitCode, st.Runs)
 	}
 	for _, p := range r.LogPaths() {
-		lines, _, err := tail(p, 5)
+		lines, _, err := logs.Tail(p, 5)
 		if err != nil || len(lines) == 0 {
 			continue
 		}
