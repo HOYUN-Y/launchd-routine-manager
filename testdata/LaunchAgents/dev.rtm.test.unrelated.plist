@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/me/.codex/packages/codex-path:/Users/me/.claude/bin:/usr/bin</string>
+	</dict>
+	<key>Label</key>
+	<string>dev.rtm.test.unrelated</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/true</string>
+	</array>
+</dict>
+</plist>
