@@ -161,3 +161,4 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 | 2026-11-12 | 스킬 초안 `skills/launchd-routine-create/SKILL.md` 커밋(7234d1d). plist 예시 `plutil -lint` 통과 |
 | 2026-11-12 | M1 커밋 7be1818. 감독 확인: vet/test 통과, 실제 맥 `rtm list --all` 동작. "no Label" 경고 4건은 실제 빈 plist라 정상. ctx 14%. Codex 검수 지시, M2 지시 |
 | 2026-11-12 | M1 검수(Codex): P0 config 정규식 손상, P1 따옴표 경로 분류 누락, P1 cron 줄번호 식별자, P2 직접 호출 근거. 감독 판단: 전부 수용. 결정: 설정을 config.json(표준 라이브러리)으로 변경, cron 식별자를 해시로. M2 완료 후 수정 지시 예정 |
+| 2026-11-12 | M2 커밋 3358d3e. 감독 확인: vet/test, 실제 show(hermes running pid 4859)·doctor·list 동작. main→impl/rtm 병합(6fc47f0). ctx 21%. M1 수정 5건(Codex 4 + 감독 추가: show/logs에서 무관한 경고 숨김)과 M3 지시, Codex에 M2 검수 지시 |
