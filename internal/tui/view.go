@@ -30,7 +30,8 @@ func (m *Model) View() string {
 	default:
 		body = m.viewList(w, bodyH)
 	}
-	return strings.Join([]string{m.viewHeader(w), fitHeight(body, bodyH, w), m.viewStatus(w), Clip(m.viewHelp(w), w)}, "\n")
+	screen := strings.Join([]string{m.viewHeader(w), fitHeight(body, bodyH, w), m.viewStatus(w), Fill(m.viewHelp(w), w, Styles.Help)}, "\n")
+	return Paint(screen, w)
 }
 
 // fitHeight makes body exactly h lines of at most w columns, so the status and help lines
@@ -52,22 +53,23 @@ func fitHeight(body string, h, w int) string {
 }
 
 func (m *Model) viewHeader(w int) string {
-	left := " rtm — routines on this Mac"
+	left := Styles.Prompt.Render(" $ ") + Styles.Header.Render("rtm") + Styles.ColumnHead.Render(" ~/routines")
 	right := ""
 	switch {
 	case m.screen == scDetail:
-		right = "상세 "
+		right = "상세"
 	case m.screen == scLogs:
-		right = "로그 "
+		right = "로그"
 	case m.screen == scForm:
-		right = "일정 변경 "
+		right = "일정 변경"
 	case m.showAll:
-		right = "[a] 전체 "
+		right = fmt.Sprintf("전체 · %d", len(m.vis))
 	default:
-		right = "[a] AI만 "
+		right = fmt.Sprintf("AI만 · %d", len(m.vis))
 	}
+	right = Styles.ColumnHead.Render(right + " ")
 	gap := max(1, w-lipgloss.Width(left)-lipgloss.Width(right))
-	return Styles.Header.Render(Clip(left+spaces(gap)+right, w))
+	return Clip(left+Styles.ColumnHead.Render(spaces(gap))+right, w)
 }
 
 // ---- list
@@ -127,7 +129,7 @@ func (m *Model) viewList(w, h int) string {
 	c := columnsFor(w)
 	gap := spaces(sep)
 	var out []string
-	out = append(out, Styles.ColumnHead.Render(spaces(c.tag)+Cell("LABEL", c.label)+gap+Cell("일정", c.sched)+gap+Cell("상태", c.state)+gap+Cell("다음 실행", c.next)))
+	out = append(out, Fill(Styles.ColumnHead.Render(spaces(c.tag)+Cell("LABEL", c.label)+gap+Cell("일정", c.sched)+gap+Cell("상태", c.state)+gap+Cell("다음 실행", c.next)), w, Styles.ColumnHead))
 
 	rows := max(1, h-1-1) // minus the column titles and the search/filter line
 	if len(m.vis) == 0 {
@@ -152,9 +154,9 @@ func (m *Model) viewList(w, h int) string {
 			}
 		}
 		stText, kind := stateOf(r)
-		out = append(out, base.Render(Cell(tag, c.tag)+Cell(r.Label, c.label)+gap+Cell(r.Schedule, c.sched)+gap)+
+		out = append(out, Fill(base.Render(Cell(tag, c.tag)+Cell(r.Label, c.label)+gap+Cell(r.Schedule, c.sched)+gap)+
 			StatusStyle(kind, sel).Render(Cell(stText, c.state))+
-			base.Render(gap+Cell(m.nextText(r), c.next)))
+			base.Render(gap+Cell(m.nextText(r), c.next)), w, base)) // the highlight bar reaches the right edge
 	}
 	for len(out) < h-1 {
 		out = append(out, "")
@@ -281,8 +283,8 @@ func (m *Model) viewDialog() string {
 	default:
 		text = p.reason.Error()
 	}
-	title := Styles.DialogTitle.Render(p.r.Label)
-	keys := Styles.HelpKey.Render("[y]") + Styles.DialogTitle.Render(" 예    ") + Styles.HelpKey.Render("[n]") + Styles.DialogTitle.Render(" 아니오")
+	title := Styles.DialogLabel.Render("// 확인") + "\n" + Styles.DialogTitle.Render(p.r.Label)
+	keys := Styles.DialogKey.Render("[y]") + Styles.DialogTitle.Render(" 예    ") + Styles.DialogKey.Render("[n]") + Styles.DialogTitle.Render(" 아니오")
 	return Styles.Dialog.Render(title + "\n\n" + text + "\n\n" + keys)
 }
 
