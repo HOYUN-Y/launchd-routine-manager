@@ -83,13 +83,11 @@ func New(t *testing.T) *Env {
 			if it.loaded(label) {
 				t.Errorf("%s is still loaded in launchd after the test", label)
 			}
-			for _, left := range []string{
-				filepath.Join(it.Agents, label+".plist"),
-				filepath.Join(it.Agents, "."+label+".plist.rtm-tmp"), // WritePlist temp file
-			} {
-				if _, err := os.Stat(left); err == nil {
-					t.Errorf("leftover test file: %s", left)
-				}
+			if _, err := os.Stat(filepath.Join(it.Agents, label+".plist")); err == nil {
+				t.Errorf("leftover test plist: %s.plist", label)
+			}
+			if tmp, _ := filepath.Glob(filepath.Join(it.Agents, "."+label+".plist.rtm-tmp-*")); len(tmp) != 0 { // WritePlist temp files
+				t.Errorf("leftover temp files: %v", tmp)
 			}
 			if left, _ := filepath.Glob(filepath.Join(backups, label+"-*")); len(left) != 0 {
 				t.Errorf("leftover test backups: %v", left)

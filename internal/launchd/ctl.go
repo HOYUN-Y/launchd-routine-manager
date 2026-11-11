@@ -112,11 +112,26 @@ func WritePlist(label, path string, data []byte) error {
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
 	}
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".rtm-tmp")
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	// The temp file is created exclusively (O_EXCL, random name) in the target's directory. A fixed
+	// name would let a pre-planted symlink redirect the write; permissions are set on this new
+	// file's own descriptor, never by path.
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".rtm-tmp-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, mode); err != nil { // WriteFile is subject to umask
+	tmp := f.Name()
+	fail := func(err error) error {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := f.Chmod(mode); err != nil { // CreateTemp makes it 0600
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -140,6 +155,9 @@ func BackupDir(home string) string { return filepath.Join(home, ".local", "state
 // and returns its path. Plists can hold secrets in EnvironmentVariables, so: dir 0700, file 0600.
 // suffix is "" for a normal backup or e.g. "pre-revert", which Latest does not consider.
 func SaveBackup(home, label, suffix string, now time.Time, data []byte) (string, error) {
+	if err := CheckFileLabel(label); err != nil {
+		return "", err
+	}
 	dir := BackupDir(home)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
@@ -153,7 +171,11 @@ func SaveBackup(home, label, suffix string, now time.Time, data []byte) (string,
 		if n > 0 {
 			name = fmt.Sprintf("%s-%d.plist", base, n)
 		}
-		f, err := os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		full := filepath.Join(dir, name)
+		if filepath.Dir(full) != filepath.Clean(dir) { // belt and braces after CheckFileLabel
+			return "", fmt.Errorf("backup path %s is outside %s", full, dir)
+		}
+		f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
@@ -164,7 +186,7 @@ func SaveBackup(home, label, suffix string, now time.Time, data []byte) (string,
 		if cerr := f.Close(); werr == nil {
 			werr = cerr
 		}
-		return filepath.Join(dir, name), werr
+		return full, werr
 	}
 	return "", errors.New("too many backups in the same second")
 }
@@ -172,6 +194,9 @@ func SaveBackup(home, label, suffix string, now time.Time, data []byte) (string,
 // LatestBackup finds the newest normal backup of label (not pre-revert copies, and not
 // another label that merely starts with this one: a-b-2026... is not a backup of a).
 func LatestBackup(home, label string) (string, error) {
+	if err := CheckFileLabel(label); err != nil {
+		return "", err
+	}
 	dir := BackupDir(home)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -196,4 +221,14 @@ func LatestBackup(home, label string) (string, error) {
 		return "", fmt.Errorf("no backup of %s (nothing was changed with rtm schedule)", label)
 	}
 	return filepath.Join(dir, best), nil
+}
+
+// CheckFileLabel says whether label can be part of a file name inside a directory: no path
+// separator, no "..", not empty, no NUL. Backups are named after the label, so a Label that
+// fails this must not be edited at all.
+func CheckFileLabel(label string) error {
+	if label == "" || label == "." || strings.ContainsAny(label, "/\x00") || strings.Contains(label, "..") {
+		return fmt.Errorf("label %q cannot be used in a file name (empty, a path separator, \"..\" or NUL)", label)
+	}
+	return nil
 }

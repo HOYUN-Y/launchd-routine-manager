@@ -142,7 +142,8 @@ func decodeMap(t *testing.T, b []byte) map[string]any {
 }
 
 func TestSetScheduleReloadsAndVerifies(t *testing.T) {
-	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 0, cal0515))
+	// prints: the first look, the look right before bootout, then the confirmation
+	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 3600), loaded("not running", 0, 0, cal0515))
 	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +154,7 @@ func TestSetScheduleReloadsAndVerifies(t *testing.T) {
 	want := strings.Join([]string{
 		"launchctl print gui/501/" + schedLabel,
 		"plutil -lint " + f.path,
+		"launchctl print gui/501/" + schedLabel, // asked again right before bootout
 		"launchctl bootout gui/501/" + schedLabel,
 		"launchctl bootstrap gui/501 " + f.path,
 		"launchctl print gui/501/" + schedLabel,
@@ -214,7 +216,7 @@ func TestSetScheduleRunningNeedsYes(t *testing.T) {
 		t.Errorf("commands ran:\n%s", f.calls())
 	}
 
-	f = newSched(t, schedPlist, loaded("running", 99, 3600), loaded("not running", 0, 0, cal0515))
+	f = newSched(t, schedPlist, loaded("running", 99, 3600), loaded("running", 99, 3600), loaded("not running", 0, 0, cal0515))
 	if _, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +288,7 @@ func TestSetScheduleLintFailureRestoresTheFile(t *testing.T) {
 }
 
 func TestSetScheduleBootoutFailureRestoresTheFile(t *testing.T) {
-	f := newSched(t, schedPlist, loaded("not running", 0, 3600))
+	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 3600))
 	f.fr.Results["launchctl bootout gui/501/"+schedLabel] = sys.Result{Err: errors.New("Operation not permitted")}
 	_, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err == nil || !strings.Contains(err.Error(), "old schedule") {
@@ -299,7 +301,7 @@ func TestSetScheduleBootoutFailureRestoresTheFile(t *testing.T) {
 
 // After bootout the job is gone; if bootstrap of the new plist fails, load the old one again.
 func TestSetScheduleBootstrapFailureLoadsTheOldPlistAgain(t *testing.T) {
-	f := newSched(t, schedPlist, loaded("not running", 0, 3600))
+	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 3600))
 	key := "launchctl bootstrap gui/501 " + f.path
 	delete(f.fr.Results, key)
 	f.fr.Queue[key] = []sys.Result{{Err: errors.New("Bootstrap failed: 5")}, {}}
@@ -315,7 +317,7 @@ func TestSetScheduleBootstrapFailureLoadsTheOldPlistAgain(t *testing.T) {
 	}
 
 	// both fail: say loudly that the job is not loaded
-	f = newSched(t, schedPlist, loaded("not running", 0, 3600))
+	f = newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 3600))
 	delete(f.fr.Results, "launchctl bootstrap gui/501 "+f.path)
 	f.fr.Queue["launchctl bootstrap gui/501 "+f.path] = []sys.Result{{Err: errors.New("x")}, {Err: errors.New("y")}}
 	_, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
@@ -324,22 +326,9 @@ func TestSetScheduleBootstrapFailureLoadsTheOldPlistAgain(t *testing.T) {
 	}
 }
 
-func TestSetScheduleReportsWhenLaunchdDoesNotShowTheChange(t *testing.T) {
-	stale := loaded("not running", 0, 3600) // launchd still holds the old interval
-	f := newSched(t, schedPlist, stale)
-	f.fr.Results["launchctl print gui/501/"+schedLabel] = stale
-	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
-	if err == nil || !strings.Contains(err.Error(), "does not show the new schedule") || !strings.Contains(err.Error(), "--revert") {
-		t.Fatalf("err = %v", err)
-	}
-	if res.BackupPath == "" {
-		t.Error("the backup path must be reported so the user can undo")
-	}
-}
-
 func TestSetScheduleNotesRunAtLoad(t *testing.T) {
 	withRAL := strings.Replace(schedPlist, "<key>ThrottleInterval", "<key>RunAtLoad</key><true/><key>ThrottleInterval", 1)
-	f := newSched(t, withRAL, loaded("not running", 0, 3600), loaded("not running", 0, 0, cal0515))
+	f := newSched(t, withRAL, loaded("not running", 0, 3600), loaded("not running", 0, 3600), loaded("not running", 0, 0, cal0515))
 	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
 	if err != nil || len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "RunAtLoad") {
 		t.Fatalf("res=%+v err=%v", res, err)
@@ -485,7 +474,7 @@ func TestRevertWithoutBackupAndWhenRunning(t *testing.T) {
 }
 
 func TestRevertReloadsAndVerifies(t *testing.T) {
-	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 900))
+	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("not running", 0, 3600), loaded("not running", 0, 900))
 	launchd.SaveBackup(f.env.Home, schedLabel, "", f.env.Clock().Add(-time.Hour), []byte(strings.Replace(schedPlist, "3600", "900", 1)))
 	res, err := RevertSchedule(ctx0, f.env, f.r, SchedOpts{})
 	if err != nil || !res.Reloaded || res.After != "every 15m" || !strings.Contains(res.Verified, "every 15m") {
@@ -572,5 +561,300 @@ func TestCronEvidenceHasTheCrontabLine(t *testing.T) {
 	p, _ := Find(rs, "dev.rtm.test.claude-direct")
 	if p.Evidence[0].Line != 0 || p.Evidence[0].File != p.Path {
 		t.Errorf("plist evidence needs only the path: %+v", p.Evidence[0])
+	}
+}
+
+// ---- M4 review fixes
+
+func TestUnderSystem(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/Library": true, "/Library/LaunchAgents": true, "/Library/LaunchAgents/x.plist": true, "/System/Library/LaunchAgents": true,
+		"/Users/me/Library/LaunchAgents": false, "/LibraryX/LaunchAgents": false, "/private/var/folders/x": false,
+		"/Users/me/Library": false, "/Systemic": false, "/": false,
+	} {
+		if got := underSystem(p); got != want {
+			t.Errorf("underSystem(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
+// Codex P0: the directory check compared strings, so a symlink at ~/Library/LaunchAgents (or above)
+// crossed the boundary. Now the resolved paths are compared, and a resolved /Library or /System is refused.
+func TestEditableResolvesSymlinks(t *testing.T) {
+	mk := func(t *testing.T) (home string) {
+		home = t.TempDir()
+		real, err := filepath.EvalSymlinks(home) // /var -> /private/var on macOS
+		if err != nil {
+			t.Fatal(err)
+		}
+		return real
+	}
+	routineAt := func(path string) Routine {
+		return Routine{Label: "dev.rtm.test.x", Source: SourceUser, Path: path}
+	}
+	env := func(home string) sys.Env { return sys.Env{Home: home} }
+	writeFile := func(p string) {
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(schedPlist), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("plain directory is allowed", func(t *testing.T) {
+		home := mk(t)
+		p := filepath.Join(home, "Library", "LaunchAgents", "dev.rtm.test.x.plist")
+		writeFile(p)
+		if err := editable(env(home), routineAt(p)); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("LaunchAgents itself a symlink to another normal directory is allowed", func(t *testing.T) {
+		home := mk(t)
+		dot := filepath.Join(home, "dotfiles", "LaunchAgents")
+		writeFile(filepath.Join(dot, "dev.rtm.test.x.plist"))
+		os.MkdirAll(filepath.Join(home, "Library"), 0o755)
+		os.Symlink(dot, filepath.Join(home, "Library", "LaunchAgents"))
+		p := filepath.Join(home, "Library", "LaunchAgents", "dev.rtm.test.x.plist")
+		if err := editable(env(home), routineAt(p)); err != nil {
+			t.Fatalf("a dotfiles-style symlink must keep working: %v", err)
+		}
+	})
+
+	t.Run("a parent (Library) that is a symlink is allowed", func(t *testing.T) {
+		home := mk(t)
+		writeFile(filepath.Join(home, "elsewhere", "LaunchAgents", "dev.rtm.test.x.plist"))
+		os.Symlink(filepath.Join(home, "elsewhere"), filepath.Join(home, "Library"))
+		p := filepath.Join(home, "Library", "LaunchAgents", "dev.rtm.test.x.plist")
+		if err := editable(env(home), routineAt(p)); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("another path into the same real directory is allowed", func(t *testing.T) {
+		home := mk(t)
+		p := filepath.Join(home, "Library", "LaunchAgents", "dev.rtm.test.x.plist")
+		writeFile(p)
+		os.Symlink(filepath.Join(home, "Library", "LaunchAgents"), filepath.Join(home, "alias"))
+		if err := editable(env(home), routineAt(filepath.Join(home, "alias", "dev.rtm.test.x.plist"))); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("a directory that resolves elsewhere is refused", func(t *testing.T) {
+		home := mk(t)
+		writeFile(filepath.Join(home, "Library", "LaunchAgents", "dev.rtm.test.x.plist"))
+		other := filepath.Join(home, "other")
+		writeFile(filepath.Join(other, "dev.rtm.test.x.plist"))
+		os.Symlink(other, filepath.Join(home, "sneaky"))
+		err := editable(env(home), routineAt(filepath.Join(home, "sneaky", "dev.rtm.test.x.plist")))
+		if err == nil || !strings.Contains(err.Error(), "only edits plists there") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("LaunchAgents missing is refused", func(t *testing.T) {
+		home := mk(t)
+		if err := editable(env(home), routineAt(filepath.Join(home, "Library", "LaunchAgents", "x.plist"))); err == nil {
+			t.Fatal("expected an error")
+		}
+	})
+
+	// The bypass itself: ~/Library/LaunchAgents is a link to the system directory. The string
+	// comparison was satisfied; the resolved path is under /Library and must be refused. Only
+	// editable() is called (it writes nothing), and the dev guard is on as a second lock.
+	t.Run("a link to /Library/LaunchAgents is refused", func(t *testing.T) {
+		const sysDir = "/Library/LaunchAgents"
+		entries, err := os.ReadDir(sysDir)
+		if err != nil || len(entries) == 0 {
+			t.Skip("no /Library/LaunchAgents on this machine")
+		}
+		home := mk(t)
+		os.MkdirAll(filepath.Join(home, "Library"), 0o755)
+		os.Symlink(sysDir, filepath.Join(home, "Library", "LaunchAgents"))
+		t.Setenv("RTM_TEST_LABELS_ONLY", "1")
+		p := filepath.Join(home, "Library", "LaunchAgents", entries[0].Name())
+		err = editable(env(home), routineAt(p))
+		if err == nil || !strings.Contains(err.Error(), "system location") {
+			t.Fatalf("err = %v, want a refusal naming the system location", err)
+		}
+	})
+}
+
+// Codex P1: the backup is named after the Label; a Label that is not a plain file name must stop the
+// change before anything is written.
+func TestScheduleRefusesLabelsThatAreNotFileNames(t *testing.T) {
+	for _, label := range []string{"../evil", "a/b", "..", "x..y", "a\x00b"} {
+		f := newSched(t, schedPlist, loaded("not running", 0, 3600))
+		r := f.r
+		r.Label = label
+		before := string(f.file(t))
+		for name, run := range map[string]func() error{
+			"set": func() error {
+				_, err := SetSchedule(ctx0, f.env, r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true, Force: true})
+				return err
+			},
+			"revert": func() error { _, err := RevertSchedule(ctx0, f.env, r, SchedOpts{Yes: true}); return err },
+		} {
+			err := run()
+			if err == nil || !strings.Contains(err.Error(), "cannot be used in a file name") {
+				t.Errorf("%s %q: err = %v", name, label, err)
+			}
+		}
+		if string(f.file(t)) != before {
+			t.Errorf("%q: the plist was modified", label)
+		}
+		f.noBackupDir(t)
+		if len(f.fr.Calls) > 1 {
+			t.Errorf("%q: commands ran: %v", label, f.fr.Calls[1:])
+		}
+		// nothing was written above the backup directory either
+		if es, _ := filepath.Glob(filepath.Join(f.env.Home, ".local", "*")); len(es) != 0 {
+			t.Errorf("%q: files created under .local: %v", label, es)
+		}
+	}
+}
+
+// Codex P1: "is it running" was asked once, before the file was written. A job that started in
+// between was stopped by the bootout without --yes.
+func TestSetScheduleRechecksRunningBeforeBootout(t *testing.T) {
+	var ce *ConfirmError
+	// idle when we looked, running when we are about to bootout
+	f := newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("running", 77, 3600))
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if !errors.As(err, &ce) || ce.Need != NeedReloadRunning {
+		t.Fatalf("err = %#v", err)
+	}
+	if string(f.file(t)) != schedPlist {
+		t.Errorf("the plist must be put back when the change is not going ahead:\n%s", f.file(t))
+	}
+	if strings.Contains(f.calls(), "bootout") || strings.Contains(f.calls(), "bootstrap") {
+		t.Errorf("the job must not be touched:\n%s", f.calls())
+	}
+	if res.BackupPath == "" {
+		t.Error("the backup is kept")
+	}
+	if !strings.Contains(err.Error(), "pid 77") {
+		t.Errorf("message = %q", err.Error())
+	}
+
+	// with --yes it goes on (the recheck only protects against a surprise)
+	f = newSched(t, schedPlist, loaded("not running", 0, 3600), loaded("running", 77, 3600), loaded("not running", 0, 0, cal0515))
+	res, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{Yes: true})
+	if err != nil || !res.Reloaded {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+
+	// the job vanished from launchd in between: nothing to reload, the file change stands
+	f = newSched(t, schedPlist, loaded("not running", 0, 3600), notLoadedS)
+	res, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if err != nil || res.Reloaded || !strings.Contains(res.Verified, "not loaded in launchd") {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if strings.Contains(f.calls(), "bootout") {
+		t.Errorf("a job that is no longer loaded must not be booted out:\n%s", f.calls())
+	}
+}
+
+// hookRunner runs fn before the command it names, to change the world at an exact moment.
+type hookRunner struct {
+	sys.Runner
+	before string // command prefix
+	fn     func()
+	done   bool
+}
+
+func (h *hookRunner) Run(name string, args ...string) (string, error) {
+	if !h.done && strings.HasPrefix(strings.Join(append([]string{name}, args...), " "), h.before) {
+		h.done = true
+		h.fn()
+	}
+	return h.Runner.Run(name, args...)
+}
+
+// Codex P1: when launchd does not show the new schedule after the reload, the old plist is put back
+// and loaded again; failures of that recovery are reported too.
+func TestSetScheduleRestoresWhenLaunchdDoesNotShowTheChange(t *testing.T) {
+	stale := loaded("not running", 0, 3600) // launchd keeps showing the old interval
+	newStale := func() *sfix {
+		f := newSched(t, schedPlist, stale, stale) // [first look, recheck], then the fallback below
+		f.fr.Results["launchctl print gui/501/"+schedLabel] = stale
+		return f
+	}
+
+	f := newStale()
+	res, err := SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if err == nil || !strings.Contains(err.Error(), "does not show the new schedule") ||
+		!strings.Contains(err.Error(), "original plist was restored and loaded again") {
+		t.Fatalf("err = %v", err)
+	}
+	if string(f.file(t)) != schedPlist {
+		t.Errorf("the original plist must be back, byte for byte:\n%s", f.file(t))
+	}
+	want := []string{"bootout", "bootstrap", "bootout", "bootstrap"} // new, then the original again
+	var got []string
+	for _, c := range f.fr.Calls {
+		for _, w := range []string{"bootout", "bootstrap"} {
+			if strings.HasPrefix(c, "launchctl "+w) {
+				got = append(got, w)
+			}
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("reload sequence = %v, want %v", got, want)
+	}
+	if b, _ := os.ReadFile(res.BackupPath); string(b) != schedPlist {
+		t.Error("the backup must be kept")
+	}
+	if !strings.Contains(err.Error(), "launchd holds the original schedule again") {
+		t.Errorf("the recovery must be verified and said so: %v", err)
+	}
+
+	// the second bootstrap fails: say the job is not loaded
+	f = newStale()
+	key := "launchctl bootstrap gui/501 " + f.path
+	delete(f.fr.Results, key)
+	f.fr.Queue[key] = []sys.Result{{}, {Err: errors.New("Bootstrap failed: 5")}}
+	_, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if err == nil || !strings.Contains(err.Error(), "NOT loaded") || string(f.file(t)) != schedPlist {
+		t.Errorf("err = %v, file restored = %v", err, string(f.file(t)) == schedPlist)
+	}
+
+	// the second bootout fails: the file is back but launchd still holds the new schedule
+	f = newStale()
+	key = "launchctl bootout gui/501/" + schedLabel
+	delete(f.fr.Results, key)
+	f.fr.Queue[key] = []sys.Result{{}, {Err: errors.New("Operation not permitted")}}
+	_, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	if err == nil || !strings.Contains(err.Error(), "still holds") || string(f.file(t)) != schedPlist {
+		t.Errorf("err = %v, file restored = %v", err, string(f.file(t)) == schedPlist)
+	}
+
+	// the original cannot be written back: report it and name the backup
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	f = newStale()
+	dir := filepath.Dir(f.path)
+	f.env.Runner = &hookRunner{Runner: f.fr, before: "launchctl bootstrap", fn: func() { os.Chmod(dir, 0o500) }}
+	defer os.Chmod(dir, 0o755)
+	res, err = SetSchedule(ctx0, f.env, f.r, f.mustDaily(t, "05:15"), SchedOpts{})
+	os.Chmod(dir, 0o755)
+	if err == nil || !strings.Contains(err.Error(), "could not be restored") || !strings.Contains(err.Error(), res.BackupPath) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRevertRestoresWhenLaunchdDoesNotShowTheChange(t *testing.T) {
+	stale := loaded("not running", 0, 3600)
+	f := newSched(t, schedPlist, stale, stale)
+	f.fr.Results["launchctl print gui/501/"+schedLabel] = stale
+	launchd.SaveBackup(f.env.Home, schedLabel, "", f.env.Clock().Add(-time.Hour), []byte(strings.Replace(schedPlist, "3600", "900", 1)))
+	_, err := RevertSchedule(ctx0, f.env, f.r, SchedOpts{})
+	if err == nil || !strings.Contains(err.Error(), "original plist was restored") {
+		t.Fatalf("err = %v", err)
+	}
+	if string(f.file(t)) != schedPlist {
+		t.Error("a failed revert must leave the plist as it was")
 	}
 }

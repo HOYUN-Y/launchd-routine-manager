@@ -100,7 +100,8 @@ func TestScheduleNotLoaded(t *testing.T) {
 }
 
 func TestScheduleReloads(t *testing.T) {
-	env, fr, _ := schedEnv(t, loadedCLI(3600, -1), loadedCLI(3600, -1), loadedCLI(0, 5))
+	// prints: lookup, the first look, the look right before bootout, the confirmation
+	env, fr, _ := schedEnv(t, loadedCLI(3600, -1), loadedCLI(3600, -1), loadedCLI(3600, -1), loadedCLI(0, 5))
 	code, out, errw := exec(t, env, "schedule", schedLabel, "--daily", "05:00")
 	if code != 0 {
 		t.Fatalf("code=%d err=%q\n%s", code, errw, out)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/HOYUN-Y/launchd-routine-manager/internal/launchd"
@@ -128,7 +129,17 @@ func apply(ctx context.Context, env sys.Env, r Routine, orig, updated []byte, wa
 		return fail(fmt.Errorf("plutil -lint rejected the new plist: %w", err))
 	}
 
-	if st.Loaded {
+	reload := st.Loaded
+	if reload {
+		// Ask again, right before bootout: the job may have started while we wrote and linted. A
+		// bootout would stop it, so without --yes put the file back and ask.
+		cur := launchd.Query(env.Runner, env.UID, r.Label)
+		if cur.IsRunning() && !o.Yes {
+			return fail(&ConfirmError{NeedReloadRunning, fmt.Sprintf("%s started running (pid %d) while the change was being prepared; reloading it would stop it. Add --yes to go ahead", r.Label, cur.PID)})
+		}
+		reload = cur.Loaded // it may have been unloaded meanwhile: then there is nothing to reload
+	}
+	if reload {
 		if err := launchd.Bootout(env.Runner, env.UID, r.Label); err != nil {
 			return fail(fmt.Errorf("launchctl bootout failed, the job keeps its old schedule: %w", err))
 		}
@@ -168,8 +179,9 @@ func apply(ctx context.Context, env sys.Env, r Routine, orig, updated []byte, wa
 				return *res, fmt.Errorf("interrupted before launchd confirmed the new schedule (the change was made; backup at %s); check with: rtm show %s", bpath, r.Label)
 			}
 		}
-		return *res, fmt.Errorf("reloaded, but launchctl print does not show the new schedule (loaded=%v, interval=%d, %d calendar entries); "+
-			"backup at %s, undo with: rtm schedule %s --revert", last.Loaded, last.RunInterval, len(last.Calendars), bpath, r.Label)
+		return undoReload(env, r, orig, bpath, res, restore, fmt.Errorf(
+			"reloaded, but launchctl print does not show the new schedule (loaded=%v, interval=%d, %d calendar entries)",
+			last.Loaded, last.RunInterval, len(last.Calendars)))
 	}
 	got, err := launchd.Read(r.Path)
 	if err != nil || got.Schedule.Interval != want.Interval || !schedule.SameCalendars(got.Schedule.Calendars, want.Calendars) {
@@ -190,14 +202,33 @@ func editable(env sys.Env, r Routine) error {
 	if err := launchd.CheckLabel(r.Label); err != nil {
 		return err
 	}
+	// the backup is named after the Label: a Label that is not a plain file name stops everything
+	if err := launchd.CheckFileLabel(r.Label); err != nil {
+		return fmt.Errorf("%w; refusing to change it", err)
+	}
 	switch r.Source {
 	case SourceCron:
 		return fmt.Errorf("%s is a crontab entry; rtm schedule only edits launchd plists", r.Label)
 	case SourceSystem:
 		return fmt.Errorf("%s is in /Library/LaunchAgents, which rtm only reads (changing it needs administrator rights)", r.Label)
 	}
+	// Compare REAL directories. ~/Library/LaunchAgents (or a parent) may itself be a symlink, which is
+	// fine (dotfiles setups) unless it leads into /Library or /System; and the plist's directory has
+	// to resolve to that same place, whatever path it was reached by.
+	// shortcut: a check, then a write: a link swapped in between the two is not guarded against.
 	agents := filepath.Join(env.Home, "Library", "LaunchAgents")
-	if filepath.Dir(r.Path) != agents {
+	realAgents, err := filepath.EvalSymlinks(agents)
+	if err != nil {
+		return fmt.Errorf("cannot resolve %s: %w", agents, err)
+	}
+	if underSystem(realAgents) {
+		return fmt.Errorf("%s resolves to %s, a system location; rtm only reads there", agents, realAgents)
+	}
+	realDir, err := filepath.EvalSymlinks(filepath.Dir(r.Path))
+	if err != nil {
+		return fmt.Errorf("cannot resolve the directory of %s: %w", r.Path, err)
+	}
+	if realDir != realAgents {
 		return fmt.Errorf("%s is not in %s; rtm only edits plists there", r.Path, agents)
 	}
 	fi, err := os.Lstat(r.Path)
@@ -213,4 +244,37 @@ func editable(env sys.Env, r Routine) error {
 func parseSpec(data []byte) (schedule.Spec, error) {
 	p, err := launchd.Parse(data)
 	return p.Schedule, err
+}
+
+// underSystem reports whether a resolved path is inside /Library or /System, which rtm never writes.
+func underSystem(p string) bool {
+	p = filepath.Clean(p)
+	for _, root := range []string{"/Library", "/System"} {
+		if p == root || strings.HasPrefix(p, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// undoReload runs after a reload that launchd does not confirm: put the original plist back and
+// load it again, then say exactly what state things are in, including every step that failed.
+func undoReload(env sys.Env, r Routine, orig []byte, bpath string, res *SchedResult, restore func() error, cause error) (SchedResult, error) {
+	if err := restore(); err != nil {
+		return *res, fmt.Errorf("%w; ALSO the original plist could not be restored (%v): launchd still holds the new schedule; copy %s back to %s by hand and reload it (launchctl bootout, then bootstrap)", cause, err, bpath, r.Path)
+	}
+	if err := launchd.Bootout(env.Runner, env.UID, r.Label); err != nil {
+		return *res, fmt.Errorf("%w; the original plist was restored but launchctl bootout failed (%v): launchd still holds the new schedule; reload it by hand", cause, err)
+	}
+	if err := launchd.Bootstrap(env.Runner, env.UID, r.Label, r.Path); err != nil {
+		return *res, fmt.Errorf("%w; the original plist was restored but loading it failed (%v): the job is NOT loaded; run launchctl bootstrap gui/%d %s", cause, err, env.UID, r.Path)
+	}
+	res.Reloaded = true
+	if want, err := parseSpec(orig); err == nil {
+		got := launchd.Query(env.Runner, env.UID, r.Label)
+		if got.Loaded && got.RunInterval == want.Interval && schedule.SameCalendars(got.Calendars, want.Calendars) {
+			return *res, fmt.Errorf("%w; the original plist was restored and loaded again; launchd holds the original schedule again (backup kept at %s)", cause, bpath)
+		}
+	}
+	return *res, fmt.Errorf("%w; the original plist was restored and loaded again, but launchctl print does not show the original schedule either: check with rtm show %s (backup kept at %s)", cause, r.Label, bpath)
 }

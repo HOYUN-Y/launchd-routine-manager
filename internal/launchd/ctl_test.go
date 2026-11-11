@@ -241,3 +241,104 @@ func TestBackups(t *testing.T) {
 		t.Error("no backup directory at all must be an error, not a crash")
 	}
 }
+
+// Codex P0: the temp file had a fixed name. If something put a symlink there, os.WriteFile followed
+// it and overwrote the link's target (and Chmod changed its permissions).
+func TestWritePlistDoesNotFollowASymlinkTmp(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "dev.rtm.test.a.plist")
+	os.WriteFile(target, []byte("old"), 0o600)
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+	os.WriteFile(victim, []byte("precious"), 0o644)
+	// the old fixed name, planted as a symlink to the victim
+	if err := os.Symlink(victim, filepath.Join(dir, ".dev.rtm.test.a.plist.rtm-tmp")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WritePlist("dev.rtm.test.a", target, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "precious" {
+		t.Fatalf("the symlink target was overwritten: %q", b)
+	}
+	if fi, _ := os.Stat(victim); fi.Mode().Perm() != 0o644 {
+		t.Errorf("the symlink target's permissions were changed to %v", fi.Mode().Perm())
+	}
+	if b, _ := os.ReadFile(target); string(b) != "new" {
+		t.Errorf("target = %q", b)
+	}
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o600 {
+		t.Errorf("target mode = %v", fi.Mode().Perm())
+	}
+}
+
+// A temp file that cannot be moved into place must not be left behind.
+func TestWritePlistRemovesItsTempFileOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dev.rtm.test.a.plist")
+	os.Mkdir(path, 0o755) // rename of a file onto a directory fails
+	if err := WritePlist("dev.rtm.test.a", path, []byte("x")); err == nil {
+		t.Fatal("expected an error")
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".*")); len(left) != 0 {
+		t.Errorf("temp file left behind: %v", left)
+	}
+}
+
+// Two writers never share a temp name.
+func TestWritePlistTempNamesAreExclusive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dev.rtm.test.a.plist")
+	os.WriteFile(path, []byte("0"), 0o644)
+	for i := 0; i < 20; i++ {
+		if err := WritePlist("dev.rtm.test.a", path, []byte(strings.Repeat("x", i+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".*")); len(left) != 0 {
+		t.Errorf("left behind: %v", left)
+	}
+}
+
+func TestCheckFileLabel(t *testing.T) {
+	for _, ok := range []string{"dev.rtm.test.a", "com.example.job", "a-b_c", "with space", "ai.hermes.gateway", "x.y.z.1"} {
+		if err := CheckFileLabel(ok); err != nil {
+			t.Errorf("%q should be fine: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "..", "../x", "a/b", "/abs", "a/../b", "x..y", "a\x00b", "."} {
+		if err := CheckFileLabel(bad); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+}
+
+// Codex P1: a Label with a path separator or ".." put the backup outside the backups directory.
+func TestBackupNeverLeavesTheBackupDirectory(t *testing.T) {
+	home := t.TempDir()
+	at := time.Date(2026, 11, 12, 2, 55, 30, 0, time.UTC)
+	for _, bad := range []string{"../evil", "a/b", "..", "", "x\x00y", "../../escape"} {
+		if p, err := SaveBackup(home, bad, "", at, []byte("secret")); err == nil {
+			t.Errorf("label %q: backup was written to %s", bad, p)
+		}
+		if _, err := LatestBackup(home, bad); err == nil {
+			t.Errorf("label %q: LatestBackup must refuse too", bad)
+		}
+	}
+	// nothing was created anywhere under home except (possibly) the backups directory itself
+	var found []string
+	filepath.Walk(home, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && !fi.IsDir() {
+			found = append(found, p)
+		}
+		return nil
+	})
+	if len(found) != 0 {
+		t.Errorf("files were created: %v", found)
+	}
+	// a normal label still works and lands inside
+	p, err := SaveBackup(home, "dev.rtm.test.ok", "", at, []byte("x"))
+	if err != nil || filepath.Dir(p) != BackupDir(home) {
+		t.Errorf("p=%s err=%v", p, err)
+	}
+}
