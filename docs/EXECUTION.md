@@ -171,3 +171,4 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 | 2026-11-12 | M5-style a94b056(브랜치 style/tui, 감독): insight-design-theme terminal 스타일 적용. 전면 Navy 800(Paint), 머리줄·표 머리 Navy 950 띠, 도움말 Navy 900 띠, 금색은 실패·진행 칸·확인 상자만, 직각 테두리, 선택 행 끝까지(Fill). tmux 캡처→HTML→헤드리스 Chrome으로 화면 확인(테스트 라벨만 사용, 로드 안 함). 테스트 -race 통과 |
 | 2026-11-12 | M4-fix 58d720e. style/tui를 impl/rtm에 병합(72bcd8a). 감독 확인: -race, RTM_INTEGRATION=1 통과, 실제 plist 불변, 흔적 0. ctx 64%: 기준(65%) 직전이고 다음 작업 중 넘을 것이 확실해 idle인 지금 /compact 실행(→0%). 결정 근거: 작업 도중 압축을 피하려는 원칙. M5 수정 5건 지시, Codex에 M4 재검수+스타일 기능 회귀 검수 지시 |
 | 2026-11-12 | Codex: M4 재검수 5건 모두 해결, 잔여 P0·P1 없음. 스타일 검수 P0·P1 없음, P2 1건(ESC[m·ESC[49m 리셋 뒤 배경 미복구) → 감독이 SGR 파라미터 해석으로 수정(style/tui, 테스트 추가) |
+| 2026-11-12 | Codex 스킬 검수: P0 스크립트 작성이 충돌 확인보다 먼저(기존 run.sh 덮어쓰기 가능), P1 rtm track이 탐색 범위 밖 plist를 추가할 수 없음(스킬·PLAN 16장 안내 오류), P1 codex exec의 Git 저장소 밖 실행 안내 누락. 감독이 전부 수정(충돌 확인 단계 신설, 안내 정정) |
