@@ -163,3 +163,4 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 | 2026-11-12 | M1 검수(Codex): P0 config 정규식 손상, P1 따옴표 경로 분류 누락, P1 cron 줄번호 식별자, P2 직접 호출 근거. 감독 판단: 전부 수용. 결정: 설정을 config.json(표준 라이브러리)으로 변경, cron 식별자를 해시로. M2 완료 후 수정 지시 예정 |
 | 2026-11-12 | M2 커밋 3358d3e. 감독 확인: vet/test, 실제 show(hermes running pid 4859)·doctor·list 동작. main→impl/rtm 병합(6fc47f0). ctx 21%. M1 수정 5건(Codex 4 + 감독 추가: show/logs에서 무관한 경고 숨김)과 M3 지시, Codex에 M2 검수 지시 |
 | 2026-11-12 | M2 검수(Codex): P1 Day·Weekday AND 계산(man launchd.plist로 OR 확인), P1 DST 없는 시각을 이른 시각으로 반환, P1 logs -f 로그 회전 시 앞부분 누락, P2 StartInterval 다음 실행이 추정임을 미표시, P2 끝 빈 줄 삭제. 감독 판단: 전부 수용. DST는 없는 시각을 건너뛰고 shortcut 주석(launchd 실제 동작 미확인, 한국은 DST 없음). M3 완료 후 전달 예정 |
+| 2026-11-12 | M1-fix 359e7ad, M3 efb0bb0. 감독 확인: vet/test, RTM_INTEGRATION=1 통과, 테스트 라벨 0건, hermes pid 4859 불변. 구현 세션이 실측으로 거짓 완료 버그를 잡고 개발용 안전장치 RTM_TEST_LABELS_ONLY 추가. ctx 30%. M2 수정 5건+M4 지시, Codex에 M1 재검수+M3 검수 지시 |
