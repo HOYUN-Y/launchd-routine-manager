@@ -183,3 +183,15 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 - 남은 한계(코드에 shortcut 주석): 확인→쓰기 사이 링크 교체, 재조회→bootout 사이 밀리초 경쟁, 외부 명령은 호출별 취소 없이 고정 15초 제한, 프로세스 간 config 잠금 없음, DST로 없는 시각은 건너뜀(launchd 실제 동작 미확인), `..`를 포함한 Label은 일정 변경 거부
 - 사용자 확인 필요: 원격 push, 스킬 설치(`~/.claude/skills`·`~/.codex/skills` 링크), `rtm` 설치 위치(`go install` 또는 PATH), 미해결 질문(12장 1·2·3·5·6)
 - 다음 차수 후보: M6 배포(Homebrew tap·Releases), M7 이력 수집기·실패 알림, 정밀 추적
+
+## 13. TUI 수동 새로고침 (2026-11-12)
+
+- 사용자 요청으로 `feat/tui-refresh` 브랜치에서 목록·상세 화면에 `Ctrl+R` 추가. 기존 `load()` 경로로 목록과 상태를 다시 읽으며 검색 조건·전체 보기·선택한 라벨을 유지한다. `r`은 기존 수동 실행을 유지한다.
+- 로딩 중 목록·상세의 추가 동작을 막아 중복 조회를 방지한다(뒤로·종료는 허용). 추적 변경 중 새로고침도 보류한다. 로그·일정 입력·확인창·검색 입력 중에는 새 단축키를 처리하지 않는다.
+- 변경 파일: `internal/tui/model.go`, `view.go`, `model_test.go`, `README.md`, `docs/PLAN.md`, 이 기록. 도움말은 100칸 너비에서 종료 키까지 보이도록 `추적 지정`을 `추적`으로 줄였다.
+- 회귀 테스트: 실제 `tea.KeyCtrlR` 메시지로 목록·상세 데이터 갱신, 선택 유지(앞에 루틴 추가), 필터·전체 보기 유지, 중복 입력 억제, 루틴 미실행, 빈 목록에서 발견 및 삭제 반영 확인.
+- 검증: `GOCACHE=/private/tmp/rtm-go-build-cache go test -race ./...`, 같은 캐시 설정의 `go vet ./...`, `git diff --check` 통과. 첫 테스트에서 도움말 잘림을 발견해 문구를 줄인 뒤 전체 테스트 재통과. 기본 캐시 경로는 샌드박스 접근 제한으로 임시 경로를 사용했다.
+- 사용자 후속 요청으로 재빌드·설치 완료: `GOCACHE=/private/tmp/rtm-go-build-cache go build -o /private/tmp/rtm-refresh ./cmd/rtm`, 같은 캐시 설정의 `go install ./cmd/rtm` 실행. 설치 경로는 기존 Go 설정의 `/Users/synergylabs/go/bin/rtm`이며 재빌드 파일과 설치 파일의 SHA-256 일치를 확인했다. 임시 빌드 시 모듈 메타데이터 캐시 쓰기 제한 경고가 있었으나 종료 코드 0이었고, 권한을 받아 실행한 설치 명령은 경고 없이 성공했다.
+- 설치 후 `/Users/synergylabs/go/bin/rtm doctor --json` 실행: 샌드박스 내 crontab 접근 경고를 구분하기 위해 읽기 전용 점검을 권한을 받아 다시 실행했다. 최종 종료 코드 0, 실패 항목 없음. claude·codex 경로, LaunchAgents, launchctl, 설정 점검 정상이며 일부 plist의 `Label` 누락 스캔 경고 6건은 남아 있다. 현재 도구 셸에서는 설치 폴더가 PATH에 없어 `~/go/bin/rtm`으로 실행하며, 셸 설정은 변경하지 않았다.
+- GitHub 반영: 사용자 후속 요청으로 작업 브랜치의 커밋·푸시와 PR 생성·병합을 승인받았다. 작성자는 류호윤으로 기록하고 Codex 공동 작성자 트레일러를 남기며, 변경 내용과 검증 결과는 PR 본문에도 기록한다.
+- 미실행: 실제 터미널 키 입력 및 launchd 통합 테스트. 이미 실행 중인 TUI에는 새 바이너리가 자동 적용되지 않으므로 종료 후 재실행해야 한다.

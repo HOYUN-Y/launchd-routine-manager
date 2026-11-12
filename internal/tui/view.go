@@ -339,11 +339,11 @@ func (m *Model) viewHelp(w int) string {
 		}
 		pairs = [][2]string{{"esc", "뒤로"}, {"↑↓", "스크롤"}, {"f", "따라가기 " + f}, {"q", "종료"}}
 	case m.screen == scDetail:
-		pairs = [][2]string{{"esc", "목록"}, {"r", "지금 실행"}, {"e", "일정 변경"}, {"l", "로그"}, {"t", "추적 지정"}, {"q", "종료"}}
+		pairs = [][2]string{{"esc", "목록"}, {"ctrl+r", "새로고침"}, {"r", "지금 실행"}, {"e", "일정 변경"}, {"l", "로그"}, {"t", "추적"}, {"q", "종료"}}
 	case m.searching:
 		pairs = [][2]string{{"enter", "확정"}, {"esc", "검색 해제"}}
 	default:
-		pairs = [][2]string{{"enter", "상세"}, {"r", "지금 실행"}, {"e", "일정 변경"}, {"l", "로그"}, {"t", "추적 지정"}, {"/", "검색"}, {"a", "AI만/전체"}, {"q", "종료"}}
+		pairs = [][2]string{{"enter", "상세"}, {"ctrl+r", "새로고침"}, {"r", "지금 실행"}, {"e", "일정 변경"}, {"l", "로그"}, {"t", "추적"}, {"/", "검색"}, {"a", "AI만/전체"}, {"q", "종료"}}
 	}
 	var parts []string
 	for _, p := range pairs {
