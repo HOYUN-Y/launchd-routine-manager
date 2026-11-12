@@ -150,6 +150,7 @@ type followMsg struct{ gen int }
 // ---- commands
 
 func (m *Model) load() tea.Cmd {
+	m.loading = true
 	return func() tea.Msg {
 		rs, w := m.be.Load()
 		return loadedMsg{rs, w}
@@ -510,6 +511,19 @@ func (m *Model) keyList(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = scList
 		}
 		return m, nil
+	}
+	if m.loading {
+		return m, nil
+	}
+	if s == "ctrl+r" {
+		if m.tracking {
+			return m, nil
+		}
+		if r, ok := m.selected(); ok {
+			m.keep = r.Label
+		}
+		m.status = ""
+		return m, m.load()
 	}
 	if m.screen == scList {
 		switch s {

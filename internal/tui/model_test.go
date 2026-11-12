@@ -150,6 +150,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyPgUp}
 	case "ctrl+c":
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
+	case "ctrl+r":
+		return tea.KeyMsg{Type: tea.KeyCtrlR}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -308,6 +310,65 @@ func TestSearch(t *testing.T) {
 	typeText(m, "qrt")
 	if m.quit {
 		t.Error("q typed into the search box must not quit")
+	}
+}
+
+func TestRefreshPreservesSelectionAndFilter(t *testing.T) {
+	for _, detail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("detail=%v", detail), func(t *testing.T) {
+			be := sample()
+			m := newModel(be)
+			press(m, "a", "/")
+			typeText(m, ".ai")
+			press(m, "enter", "j")
+			selected, _ := m.selected()
+			if detail {
+				press(m, "enter")
+			}
+			screen := m.screen
+			if !strings.Contains(plain(m.viewHelp(200)), "ctrl+r 새로고침") {
+				t.Fatal("refresh must appear in help")
+			}
+			be.rs = append([]routine.Routine{rt("aaa.ai", true, loadedOK())}, be.rs...)
+			for i := range be.rs {
+				if be.rs[i].Label == selected.Label {
+					be.rs[i].Schedule = "daily 12:00"
+				}
+			}
+			_, cmd := m.Update(key("ctrl+r"))
+			if cmd == nil || !m.loading {
+				t.Fatal("refresh must start loading")
+			}
+			if _, duplicate := m.Update(key("ctrl+r")); duplicate != nil {
+				t.Fatal("refresh must not start a second load while loading")
+			}
+			drain(m, cmd)
+			r, ok := m.selected()
+			if !ok || r.Label != selected.Label || r.Schedule != "daily 12:00" {
+				t.Fatalf("refresh must update data and keep selection: %+v", r)
+			}
+			if m.loading || be.loads != 2 || m.screen != screen || m.filter != ".ai" || !m.showAll {
+				t.Fatalf("refresh changed view state: loads=%d screen=%v filter=%q all=%v", be.loads, m.screen, m.filter, m.showAll)
+			}
+			if len(be.runs) != 0 {
+				t.Fatal("refresh must not run a routine")
+			}
+		})
+	}
+}
+
+func TestRefreshEmptyList(t *testing.T) {
+	be := &fakeBE{}
+	m := newModel(be)
+	be.rs = []routine.Routine{rt("new.ai", true, loadedOK())}
+	press(m, "ctrl+r")
+	if r, ok := m.selected(); !ok || r.Label != "new.ai" || be.loads != 2 {
+		t.Fatal("refresh must discover routines even when the list was empty")
+	}
+	be.rs = nil
+	press(m, "ctrl+r")
+	if _, ok := m.selected(); ok || len(m.vis) != 0 {
+		t.Fatal("refresh must remove routines that disappeared")
 	}
 }
 
