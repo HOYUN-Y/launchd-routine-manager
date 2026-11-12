@@ -195,3 +195,13 @@ testdata/                plist·launchctl print 출력·crontab 샘플
 - 설치 후 `/Users/synergylabs/go/bin/rtm doctor --json` 실행: 샌드박스 내 crontab 접근 경고를 구분하기 위해 읽기 전용 점검을 권한을 받아 다시 실행했다. 최종 종료 코드 0, 실패 항목 없음. claude·codex 경로, LaunchAgents, launchctl, 설정 점검 정상이며 일부 plist의 `Label` 누락 스캔 경고 6건은 남아 있다. 현재 도구 셸에서는 설치 폴더가 PATH에 없어 `~/go/bin/rtm`으로 실행하며, 셸 설정은 변경하지 않았다.
 - GitHub 반영: 사용자 후속 요청으로 작업 브랜치의 커밋·푸시와 PR 생성·병합을 승인받았다. 작성자는 류호윤으로 기록하고 Codex 공동 작성자 트레일러를 남기며, 변경 내용과 검증 결과는 PR 본문에도 기록한다.
 - 미실행: 실제 터미널 키 입력 및 launchd 통합 테스트. 이미 실행 중인 TUI에는 새 바이너리가 자동 적용되지 않으므로 종료 후 재실행해야 한다.
+
+## 14. make install 지원 (2026-11-13)
+
+- 사용자 요청으로 루트 `Makefile`에 `build`, `install` 타깃 추가. `make install`은 매번 `go build -o rtm ./cmd/rtm` 후 `/usr/local/bin/rtm`에 실행 권한 755로 설치한다. 루트 빌드 결과물은 기존 `.gitignore`의 `/rtm` 규칙이 적용된다.
+- `PREFIX`(기본 `/usr/local`)와 `BINDIR`(기본 `$(PREFIX)/bin`)로 설치 경로를 변경할 수 있다. 설치 폴더 생성·쓰기 권한이 부족하면 설치 단계에서만 `sudo install`을 사용하며, Go 빌드는 일반 사용자로 실행한다.
+- README의 기본 설치 방법을 `make install`로 변경하고, 업데이트·경로 재정의·기존 `go install`과의 관계 및 `command -v rtm` 확인을 안내했다.
+- 검증: 임시 작업 폴더에서 모의 Go 명령을 사용해 공백 포함 PREFIX, 설치 폴더 생성, 실행 권한 755와 설치 파일 실행, BINDIR 재정의, 권한 부족 시 sudo 분기(모의 sudo), 빌드 실패 시 설치 중단을 확인했다. `git diff --check` 통과.
+- 실제 `make install`은 `go: No such file or directory`로 빌드 단계에서 실패했다. 현재 셸의 PATH와 일반 설치 위치 `/opt/homebrew/bin/go`, `/usr/local/go/bin/go`에서 Go를 찾지 못했다. 실제 바이너리 빌드·설치와 Go 테스트는 수행하지 못했으며, `go.mod`의 Go 1.27.4 이상을 사용할 수 있는 환경에서 후속 확인이 필요하다. 기존 실행 파일과 셸 설정은 변경하지 않았다.
+- 후속 사용자 요청으로 `brew install go` 실행, Go 1.27.4 darwin/arm64 설치 완료(`/opt/homebrew/bin/go`). `make install`로 실제 빌드 및 `/usr/local/bin/rtm` 설치 완료. 설치 위치에 사용자 쓰기 권한이 있어 sudo 없이 설치됐으며, 빌드 결과물과 설치 파일은 `cmp`로 일치 확인했다.
+- 새 로그인 셸(`zsh -lic`)에서 `go version`과 `command -v rtm`으로 별도 PATH 수정 없이 Go와 `/usr/local/bin/rtm`을 찾는 것을 확인했다. 셸 시작 스크립트의 캐시 쓰기·커널 조회는 샌드박스 제한 경고가 있었으나 명령 탐색에는 영향이 없었다. `rtm --help`는 미지원 명령이라 종료 코드 2를 반환했으며, 지원되는 `rtm doctor --json`으로 재검증해 종료 코드 0, 실패 항목 없음 확인(기존 plist Label 누락 경고 8건). `go test ./...` 전체 통과. 실제 TUI의 대화형 키 입력 및 launchd 통합 테스트는 미실행.

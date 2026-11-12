@@ -11,15 +11,22 @@ Go 1.27 이상이 필요하다.
 ```sh
 git clone https://github.com/HOYUN-Y/launchd-routine-manager.git
 cd launchd-routine-manager
-go install ./cmd/rtm        # ~/go/bin/rtm 에 설치
+make install               # /usr/local/bin/rtm 에 설치
 rtm doctor                  # claude·codex 경로, LaunchAgents 접근, launchctl 점검
 ```
 
-`~/go/bin`이 PATH에 없으면 셸 설정(`~/.zshrc`)에 추가한다.
+`make install`은 빌드 후 기본 PATH에 포함된 `/usr/local/bin`에 설치하므로, 새 터미널에서도 어느 폴더에서든 `rtm`을 실행할 수 있다. 설치 폴더에 쓰기 권한이 없으면 설치 단계에서만 `sudo`로 관리자 비밀번호를 요청한다. `sudo make install`은 필요하지 않다.
+
+업데이트는 프로젝트 폴더에서 실행한다.
 
 ```sh
-export PATH="$HOME/go/bin:$PATH"
+git pull --ff-only
+make install
 ```
+
+설치 위치를 바꾸려면 `make install PREFIX="$HOME/.local"` 또는 `make install BINDIR="원하는/bin/경로"`를 쓴다. 사용자 지정 경로는 PATH에 포함되어 있어야 `rtm`만으로 실행할 수 있다.
+
+기존 `go install ./cmd/rtm`도 사용할 수 있으나, Go 설치 경로(기본 `~/go/bin`)를 별도로 PATH에 추가해야 할 수 있다. 이전에 설치한 실행 파일이 있다면 `command -v rtm`으로 현재 선택되는 경로를 확인한다.
 
 설치하지 않고 써 보려면 `go build -o rtm ./cmd/rtm && ./rtm`.
 
