@@ -8,11 +8,11 @@
 
 루틴 목록에서 일정·상태·다음 실행 시각을 확인한다.
 
-![rtm TUI 루틴 목록](assets/screenshots/tui-list.png)
+![rtm TUI 루틴 목록](assets/screenshots/tui-list-redacted.png)
 
 루틴을 선택하면 실행 명령·로그 경로 등 상세 정보를 볼 수 있다.
 
-![rtm TUI 루틴 상세 정보](assets/screenshots/tui-detail.png)
+![rtm TUI 루틴 상세 정보](assets/screenshots/tui-detail-redacted.png)
 
 ## 설치
 
