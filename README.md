@@ -4,6 +4,16 @@
 
 루틴을 새로 만드는 일은 rtm 밖에서 한다. 에이전트로 만들 때는 [루틴 생성 스킬](skills/launchd-routine-create/SKILL.md)을 쓴다.
 
+## 화면 예시
+
+루틴 목록에서 일정·상태·다음 실행 시각을 확인한다.
+
+![rtm TUI 루틴 목록](assets/screenshots/tui-list.png)
+
+루틴을 선택하면 실행 명령·로그 경로 등 상세 정보를 볼 수 있다.
+
+![rtm TUI 루틴 상세 정보](assets/screenshots/tui-detail.png)
+
 ## 설치
 
 Go 1.27 이상이 필요하다.
